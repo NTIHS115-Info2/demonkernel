@@ -11,7 +11,13 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
 
-    "sourceMap": true
+    "sourceMap": true,
+
+    "baseUrl": ".",
+    "paths" : {
+      "@core/*": ["src/core/*"],
+    }
+
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist"]

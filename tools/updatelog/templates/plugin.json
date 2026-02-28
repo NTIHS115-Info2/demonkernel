@@ -1,0 +1,100 @@
+{
+  "id": "plugin",
+  "category": "plugin",
+  "questions": [
+    {
+      "id": "pluginType",
+      "prompt": "請選擇插件類型",
+      "type": "select",
+      "required": true,
+      "choicesSource": "pluginTypes"
+    },
+    {
+      "id": "pluginName",
+      "prompt": "請選擇插件名稱",
+      "type": "select-or-input",
+      "required": true,
+      "choicesSource": "pluginNames"
+    },
+    {
+      "id": "version",
+      "prompt": "請輸入版本號 (x.y.z)",
+      "type": "input",
+      "required": true
+    },
+    {
+      "id": "summary",
+      "prompt": "請輸入更新摘要",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "added",
+      "prompt": "Added 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "changed",
+      "prompt": "Changed 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "fixed",
+      "prompt": "Fixed 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "removed",
+      "prompt": "Removed 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "impact",
+      "prompt": "Impact 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "tests",
+      "prompt": "Tests 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "risksRollback",
+      "prompt": "Risks & Rollback 內容",
+      "type": "list",
+      "required": true
+    },
+    {
+      "id": "notes",
+      "prompt": "Notes 內容",
+      "type": "list",
+      "required": true
+    }
+  ],
+  "sections": [
+    "# UpdateLog vX.Y.Z",
+    "## Metadata",
+    "## Summary",
+    "## Changes",
+    "## Impact",
+    "## Tests",
+    "## Risks & Rollback",
+    "## Notes"
+  ],
+  "requiredSections": [
+    "Metadata",
+    "Summary",
+    "Changes",
+    "Impact",
+    "Tests",
+    "Risks & Rollback",
+    "Notes"
+  ]
+}
+

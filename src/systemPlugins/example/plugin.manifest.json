@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "name": "example",
+    "version": "0.0.1",
+    "description": "this is an example system plugin",
+    "type": "system",
+    "entry": "index.js"
+  },
+
+  "runtime": {
+    "priority": 0,
+    "method" : ["local" , "remote"],
+    "onlineOptions": {
+      "oneOf" : [
+        {
+          "when": { "method": "local" },
+          "schema": {
+            "method": { "type": "string", "enum": ["local"] },
+            "path": { "type": "string", "optional": true }
+          }
+        },
+        {
+          "when": { "method": "remote" },
+          "schema": {
+            "method": { "type": "string", "enum": ["remote"] },
+            "url": { "type": "string" },
+            "token": { "type": "string", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode" : {
+      "1000": "未知錯誤",
+      "1001": "輸入無效",
+      "1002": "處理失敗"
+    }
+  },
+
+  "dependencies": {
+    "system": {},
+    "skill": {}
+  },
+
+  "io": {
+    "input": {
+      "text": "string"
+    },
+    "output": {
+      "reply": "string"
+    },
+    "examples": [
+      {
+        "input": { "text": "hello" },
+        "output": { "reply": "world" }
+      }
+    ]
+  }
+}

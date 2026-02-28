@@ -1,0 +1,15 @@
+{
+  "categories": [
+    {
+      "id": "main",
+      "label": "Main 主版本更新",
+      "template": "main.json"
+    },
+    {
+      "id": "plugin",
+      "label": "Plugin 插件更新",
+      "template": "plugin.json"
+    }
+  ]
+}
+
