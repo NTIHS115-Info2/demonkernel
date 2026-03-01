@@ -1,102 +1,149 @@
-// src/start/index.ts
-import fs from "node:fs";
-import path from "node:path";
+import pluginsManager from "./core/pluginsManager";
+import type { OnlineMethod, OnlineOptions } from "./core/plugin-sdk";
 
-import type { IPlugin, PluginManifest, OnlineOptions } from "./core/plugin-sdk";
-import { 
-    validateManifest, validateOnlineOptions,
-    CoreErrorCode, makeError
-} from "./core/plugin-sdk";
+type CliArgs = {
+  plugin?: string;
+  options: OnlineOptions;
+};
 
-function readJsonFile<T>(filePath: string): T {
-  const raw = fs.readFileSync(filePath, "utf-8");
-  return JSON.parse(raw) as T;
-}
+function parseCliArgs(argv: string[]): CliArgs {
+  const options: Record<string, unknown> = {
+    method: "local",
+  };
+  let plugin: string | undefined;
 
-// 很粗暴但實用：從 argv 取 method 與 url/token/path
-function parseOnlineOptions(argv: string[]): OnlineOptions {
-  // 預設 local
-  const options: Record<string, unknown> = { method: "local" };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const next = argv[i + 1];
 
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--method") options.method = argv[i + 1];
-    if (a === "--url") options.url = argv[i + 1];
-    if (a === "--token") options.token = argv[i + 1];
-    if (a === "--path") options.path = argv[i + 1];
-  }
-
-  return options as OnlineOptions;
-}
-
-async function main() {
-  // 你可以改成從 argv 指定 plugin 路徑
-  const pluginDir = path.resolve(process.cwd(), "dist" , "skillPlugins", "example");
-  const manifestPath = path.join(pluginDir, "plugin.manifest.json");
-
-  if (!fs.existsSync(manifestPath)) {
-    console.error(`[start] manifest not found: ${manifestPath}`);
-    process.exit(1);
-  }
-
-  const manifest = readJsonFile<PluginManifest>(manifestPath);
-
-  // 1) validate manifest
-  const m = validateManifest(manifest);
-  if (!m.ok) {
-    console.error("[start] manifest invalid:", m.error);
-    process.exit(1);
-  }
-
-  // 2) load plugin entry
-  const entryPath = path.resolve(pluginDir, manifest.meta.entry);
-  let pluginModule: any;
-  try {
-    // CommonJS require
-    pluginModule = require(entryPath);
-  } catch (e) {
-    console.error("[start] require entry failed:", e);
-    process.exit(1);
-  }
-
-  const plugin: IPlugin = (pluginModule?.default ?? pluginModule) as IPlugin;
-  if (!plugin?.online || !plugin?.offline) {
-    console.error("[start] entry does not export a valid IPlugin");
-    process.exit(1);
-  }
-
-  // 3) parse + validate options
-  const options = parseOnlineOptions(process.argv.slice(2));
-  const v = validateOnlineOptions(manifest, options);
-  if (!v.ok) {
-    console.error("[start] online options invalid:", v.error);
-    process.exit(1);
-  }
-
-  // 4) online
-  const res = await plugin.online(options);
-  if (!res.ok) {
-    console.error("[start] plugin online failed:", res.error);
-    process.exit(1);
-  }
-  console.log("[start] plugin online ok");
-
-  // 5) graceful shutdown
-  const shutdown = async () => {
-    console.log("[start] shutting down...");
-    try {
-      const off = await plugin.offline();
-      if (!off.ok) console.error("[start] offline failed:", off.error);
-    } finally {
-      process.exit(0);
+    if (arg === "--plugin" && next) {
+      plugin = next;
+      i += 1;
+      continue;
     }
+
+    if (arg === "--method" && next) {
+      options.method = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--url" && next) {
+      options.url = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--token" && next) {
+      options.token = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--path" && next) {
+      options.path = next;
+      i += 1;
+      continue;
+    }
+  }
+
+  return {
+    plugin,
+    options: {
+      ...options,
+      method: (options.method as OnlineMethod) ?? "local",
+    } as OnlineOptions,
+  };
+}
+
+function printStartupReport(report: ReturnType<typeof pluginsManager.getStartupReport>): void {
+  if (report.started.length > 0) {
+    console.log(`[start] started plugins: ${report.started.join(", ")}`);
+  }
+
+  if (report.skipped.length > 0) {
+    console.log(`[start] skipped plugins: ${report.skipped.join(", ")}`);
+  }
+
+  for (const failure of report.failed) {
+    console.error(`[start] failed ${failure.key}: ${failure.reason}`);
+  }
+
+  for (const blocked of report.blocked) {
+    console.error(`[start] blocked ${blocked.key}: ${blocked.reason}`);
+  }
+
+  for (const cycle of report.cycles) {
+    console.error(`[start] cycle detected: ${cycle.join(" -> ")}`);
+  }
+}
+
+export async function run(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const cli = parseCliArgs(argv);
+
+  const summary = pluginsManager.discoverPlugins();
+  if (summary.registered === 0) {
+    throw new Error("no plugins discovered under dist/skillPlugins and dist/systemPlugins");
+  }
+
+  const dependencyValidation = pluginsManager.validateDependencies();
+  if (!dependencyValidation.ok) {
+    for (const message of dependencyValidation.errors) {
+      console.warn(`[start] dependency validation warning: ${message}`);
+    }
+  }
+
+  if (cli.plugin) {
+    const result = await pluginsManager.online(cli.plugin, {
+      onlineOptions: cli.options,
+    });
+
+    if (!result.ok) {
+      throw new Error(`online failed for ${result.key}: ${result.error ?? "unknown error"}`);
+    }
+
+    console.log(`[start] plugin online ok: ${result.key}`);
+  } else {
+    const report = await pluginsManager.onlineAll({
+      defaultOnlineOptions: cli.options,
+    });
+
+    printStartupReport(report);
+
+    if (report.failed.length > 0 || report.blocked.length > 0) {
+      throw new Error("some plugins failed or were blocked during startup");
+    }
+
+    console.log("[start] all plugins online");
+  }
+
+  const shutdown = async (): Promise<void> => {
+    console.log("[start] shutting down...");
+    const results = await pluginsManager.offlineAll();
+
+    for (const result of results) {
+      if (!result.ok) {
+        console.error(`[start] offline failed for ${result.key}: ${result.error ?? "unknown error"}`);
+      }
+    }
+
+    process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => {
+    void shutdown();
+  });
+
+  process.on("SIGTERM", () => {
+    void shutdown();
+  });
 }
 
-main().catch((e) => {
-  console.error("[start] fatal:", e ?? makeError(CoreErrorCode.ONLINE_FAILED, "fatal", e));
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch((error) => {
+    console.error("[start] fatal:", error);
+    process.exit(1);
+  });
+}
+
+export { parseCliArgs };

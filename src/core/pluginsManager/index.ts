@@ -1,71 +1,663 @@
-import fs from "node:fs";
-import path from "node:path";
+import type { OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
 
-class PluginsManager {
+import {
+  PluginsManagerError,
+  PluginsManagerErrorCode,
+  toErrorMessage,
+} from "./errors";
+import {
+  loadPluginHandle,
+  runOfflineLifecycle,
+  runOnlineLifecycle,
+  runRestartLifecycle,
+  runSendLifecycle,
+  runStateLifecycle,
+} from "./lifecycle";
+import {
+  buildScanSummary,
+  createDefaultPluginPaths,
+  createPluginKey,
+  discoverPluginsInDirectory,
+  normalizePluginName,
+} from "./registry";
+import { detectDependencyCycles, evaluateDependencyStatus } from "./dependency";
+import type {
+  LifecycleActionResult,
+  ManagerLogger,
+  OnlineCommandOptions,
+  PluginDescriptor,
+  PluginHandle,
+  PluginKey,
+  PluginRef,
+  PluginRuntime,
+  PluginRuntimeSnapshot,
+  PluginsManagerOptions,
+  RegistrySnapshotItem,
+  ScanSummary,
+  SendCommandOptions,
+  StartupFailure,
+  StartupOptions,
+  StartupReport,
+  StateResult,
+} from "./types";
 
-    skillPluginsPath: string;
-    systemPluginsPath: string;
-
-    // 插件列表 (插件名稱 : 插件實例)
-    skillPlugins: Map<string, object> = new Map();
-    systemPlugins: Map<string, object> = new Map();
-
-    constructor() {
-
-        this.skillPluginsPath = path.resolve(__dirname, ".." , "skillPlugins");
-        this.systemPluginsPath = path.resolve(__dirname, ".." , "systemPlugins");
-
-
-
-    }
-
-    /**
-     * 
-     * @param pluginDir 
-     */
-    private scanPluginDirectory(
-        basePath: string, 
-        targetMap : Map<string, object>
-    ) {
-        const pluginDirs = fs.readdirSync(basePath, { withFileTypes: true });
-
-        for (const dirent of pluginDirs) {
-            if (!dirent.isDirectory()) continue;
-
-            const pluginName = dirent.name;
-            const pluginPath = path.join(basePath, pluginName , "index.js");
-
-            if (!fs.existsSync(pluginPath)) {
-                console.warn(`[PluginsManager] 插件 ${pluginName} 缺少 index.js 文件`);
-                continue;
-            }
-
-            const pluginsModule = require(pluginPath);
-
-            targetMap.set(pluginName, pluginsModule);
-        }
-    }
-
-    /**
-     * 掃描兩個插件目錄，+
-     * 
-     */ 
-    scanPlugins() {
-        
-        this.scanPluginDirectory(this.skillPluginsPath, this.skillPlugins);
-        this.scanPluginDirectory(this.systemPluginsPath, this.systemPlugins);
-
-        for (const pluginName of this.skillPlugins.keys()) {
-            console.log(`[PluginsManager] 已加载技能插件: ${pluginName}`);
-        }
-
-        for (const pluginName of this.systemPlugins.keys()) {
-            console.log(`[PluginsManager] 已加载系统插件: ${pluginName}`);
-        }
-
-    }
-
-
+const defaultLogger: ManagerLogger = {
+  info: (...args: unknown[]) => console.log("[PluginsManager]", ...args),
+  warn: (...args: unknown[]) => console.warn("[PluginsManager]", ...args),
+  error: (...args: unknown[]) => console.error("[PluginsManager]", ...args),
+  debug: (...args: unknown[]) => console.debug("[PluginsManager]", ...args),
 };
 
-export default new PluginsManager();
+function initializeRuntime(): PluginRuntime {
+  return {
+    state: "offline",
+    lastError: null,
+    lastStateCode: null,
+    moduleLoaded: false,
+    onlineMethod: null,
+  };
+}
+
+function parseKeyFromRef(ref: PluginRef): PluginKey | null {
+  if (typeof ref !== "string") {
+    return null;
+  }
+
+  const normalized = ref.trim().toLowerCase();
+  if (!normalized.includes(":")) {
+    return null;
+  }
+
+  const [type, name] = normalized.split(":");
+  if ((type !== "skill" && type !== "system") || !name) {
+    return null;
+  }
+
+  return `${type}:${name}` as PluginKey;
+}
+
+function toFailure(key: PluginKey, reason: string): StartupFailure {
+  return {
+    key,
+    reason,
+  };
+}
+
+export class PluginsManager {
+  readonly skillPluginsPath: string;
+  readonly systemPluginsPath: string;
+
+  private readonly logger: ManagerLogger;
+  private readonly registry = new Map<PluginKey, PluginDescriptor>();
+  private readonly invalidRegistry = new Map<string, {
+    type: PluginType;
+    directory: string;
+    manifestPath: string;
+    reason: string;
+    recordedAt: string;
+  }>();
+  private readonly runtime = new Map<PluginKey, PluginRuntime>();
+  private readonly handles = new Map<PluginKey, PluginHandle>();
+  private lastStartupReport: StartupReport = {
+    requested: [],
+    started: [],
+    skipped: [],
+    failed: [],
+    blocked: [],
+    cycles: [],
+  };
+
+  constructor(options: PluginsManagerOptions = {}) {
+    const defaults = createDefaultPluginPaths(__dirname);
+    this.skillPluginsPath = options.skillPluginsPath ?? defaults.skillPluginsPath;
+    this.systemPluginsPath = options.systemPluginsPath ?? defaults.systemPluginsPath;
+    this.logger = options.logger ?? defaultLogger;
+  }
+
+  discoverPlugins(): ScanSummary {
+    const previousRuntime = new Map(this.runtime);
+    const previousHandles = new Map(this.handles);
+
+    this.registry.clear();
+    this.invalidRegistry.clear();
+
+    const skillSummary = discoverPluginsInDirectory(
+      "skill",
+      this.skillPluginsPath,
+      this.registry,
+      this.invalidRegistry
+    );
+    const systemSummary = discoverPluginsInDirectory(
+      "system",
+      this.systemPluginsPath,
+      this.registry,
+      this.invalidRegistry
+    );
+
+    const summary = buildScanSummary(skillSummary, systemSummary);
+
+    this.runtime.clear();
+    this.handles.clear();
+
+    for (const [key] of this.registry) {
+      this.runtime.set(key, previousRuntime.get(key) ?? initializeRuntime());
+      const existingHandle = previousHandles.get(key);
+      if (existingHandle) {
+        this.handles.set(key, existingHandle);
+      }
+    }
+
+    this.logger.info(
+      `discovery complete: total=${summary.total}, registered=${summary.registered}, invalid=${summary.invalid}`
+    );
+
+    return summary;
+  }
+
+  validateDependencies(): { ok: boolean; errors: string[] } {
+    const errors: string[] = [];
+
+    for (const descriptor of this.registry.values()) {
+      for (const [depName, expectedVersion] of Object.entries(descriptor.dependencies.skill)) {
+        const dependencyKey = createPluginKey("skill", depName);
+        const dependency = this.registry.get(dependencyKey);
+        if (!dependency) {
+          errors.push(`${descriptor.key} requires missing dependency ${dependencyKey}`);
+          continue;
+        }
+        if (dependency.version !== expectedVersion) {
+          errors.push(
+            `${descriptor.key} requires ${dependencyKey}@${expectedVersion}, got ${dependency.version}`
+          );
+        }
+      }
+
+      for (const [depName, expectedVersion] of Object.entries(descriptor.dependencies.system)) {
+        const dependencyKey = createPluginKey("system", depName);
+        const dependency = this.registry.get(dependencyKey);
+        if (!dependency) {
+          errors.push(`${descriptor.key} requires missing dependency ${dependencyKey}`);
+          continue;
+        }
+        if (dependency.version !== expectedVersion) {
+          errors.push(
+            `${descriptor.key} requires ${dependencyKey}@${expectedVersion}, got ${dependency.version}`
+          );
+        }
+      }
+    }
+
+    return {
+      ok: errors.length === 0,
+      errors,
+    };
+  }
+
+  getRegistrySnapshot(): RegistrySnapshotItem[] {
+    return Array.from(this.registry.values()).map((descriptor) => ({
+      key: descriptor.key,
+      type: descriptor.type,
+      name: descriptor.name,
+      version: descriptor.version,
+      startupWeight: descriptor.startupWeight,
+      manifestPath: descriptor.manifestPath,
+      entryPath: descriptor.entryPath,
+      dependencies: {
+        skill: { ...descriptor.dependencies.skill },
+        system: { ...descriptor.dependencies.system },
+      },
+    }));
+  }
+
+  getInvalidPlugins() {
+    return Array.from(this.invalidRegistry.values()).map((entry) => ({ ...entry }));
+  }
+
+  getRuntimeStatus(): PluginRuntimeSnapshot[] {
+    return Array.from(this.runtime.entries()).map(([key, value]) => ({
+      key,
+      state: value.state,
+      lastError: value.lastError,
+      lastStateCode: value.lastStateCode,
+      moduleLoaded: value.moduleLoaded,
+      onlineMethod: value.onlineMethod,
+    }));
+  }
+
+  getStartupReport(): StartupReport {
+    return {
+      requested: [...this.lastStartupReport.requested],
+      started: [...this.lastStartupReport.started],
+      skipped: [...this.lastStartupReport.skipped],
+      failed: this.lastStartupReport.failed.map((item) => ({ ...item })),
+      blocked: this.lastStartupReport.blocked.map((item) => ({ ...item })),
+      cycles: this.lastStartupReport.cycles.map((cycle) => [...cycle]),
+    };
+  }
+
+  resolvePluginKey(ref: PluginRef): PluginKey {
+    const byKey = parseKeyFromRef(ref);
+    if (byKey) {
+      if (!this.registry.has(byKey)) {
+        throw new PluginsManagerError(
+          "PLUGIN_NOT_FOUND",
+          `plugin not found: ${String(ref)}`
+        );
+      }
+      return byKey;
+    }
+
+    const normalizedRef = normalizePluginName(String(ref));
+    const matches = Array.from(this.registry.keys()).filter((key) => key.endsWith(`:${normalizedRef}`));
+
+    if (matches.length === 0) {
+      throw new PluginsManagerError(
+        "PLUGIN_NOT_FOUND",
+        `plugin not found: ${String(ref)}`
+      );
+    }
+
+    if (matches.length > 1) {
+      throw new PluginsManagerError(
+        "PLUGIN_AMBIGUOUS",
+        `plugin ref is ambiguous: ${String(ref)} (use skill:<name> or system:<name>)`
+      );
+    }
+
+    return matches[0] as PluginKey;
+  }
+
+  async onlineAll(options: StartupOptions = {}): Promise<StartupReport> {
+    const requested = Array.from(this.registry.keys());
+    const report = await this.onlineMany(requested, options);
+    this.lastStartupReport = report;
+    return report;
+  }
+
+  async online(ref: PluginRef, command: OnlineCommandOptions = {}): Promise<LifecycleActionResult> {
+    try {
+      const key = this.resolvePluginKey(ref);
+      const perPluginOnlineOptions: Record<string, OnlineOptions> = {};
+      if (command.onlineOptions) {
+        perPluginOnlineOptions[key] = command.onlineOptions;
+      }
+
+      const report = await this.onlineMany([key], {
+        perPluginOnlineOptions,
+      });
+
+      if (report.started.includes(key) || report.skipped.includes(key)) {
+        const runtime = this.ensureRuntime(key);
+        return {
+          key,
+          ok: true,
+          state: runtime.state,
+        };
+      }
+
+      const failed = [...report.failed, ...report.blocked].find((entry) => entry.key === key);
+      const runtime = this.ensureRuntime(key);
+      return {
+        key,
+        ok: false,
+        state: runtime.state,
+        error: failed?.reason ?? "online failed",
+      };
+    } catch (error) {
+      const runtimeKey = typeof ref === "string" ? ref : "unknown";
+      return {
+        key: runtimeKey,
+        ok: false,
+        state: "error",
+        error: toErrorMessage(error),
+      };
+    }
+  }
+
+  async offline(ref: PluginRef): Promise<LifecycleActionResult> {
+    let key: string = typeof ref === "string" ? ref : "unknown";
+    try {
+      key = this.resolvePluginKey(ref);
+    } catch (error) {
+      return {
+        key: String(key),
+        ok: false,
+        state: "error",
+        error: toErrorMessage(error),
+      };
+    }
+
+    try {
+      const resolvedKey = key as PluginKey;
+      const handle = this.ensureHandle(resolvedKey);
+      const runtime = this.ensureRuntime(resolvedKey);
+      return await runOfflineLifecycle({ handle, runtime });
+    } catch (error) {
+      return this.handleLifecycleError(key as PluginKey, "OFFLINE_FAILED", error);
+    }
+  }
+
+  async restart(ref: PluginRef, command: OnlineCommandOptions = {}): Promise<LifecycleActionResult> {
+    let key: string = typeof ref === "string" ? ref : "unknown";
+    try {
+      key = this.resolvePluginKey(ref);
+    } catch (error) {
+      return {
+        key: String(key),
+        ok: false,
+        state: "error",
+        error: toErrorMessage(error),
+      };
+    }
+
+    try {
+      const resolvedKey = key as PluginKey;
+      const handle = this.ensureHandle(resolvedKey);
+      const runtime = this.ensureRuntime(resolvedKey);
+      return await runRestartLifecycle({ handle, runtime, command });
+    } catch (error) {
+      return this.handleLifecycleError(key as PluginKey, "RESTART_FAILED", error);
+    }
+  }
+
+  async send(ref: PluginRef, payload: SendOptions): Promise<LifecycleActionResult<unknown>> {
+    let key: string = typeof ref === "string" ? ref : "unknown";
+    try {
+      key = this.resolvePluginKey(ref);
+    } catch (error) {
+      return {
+        key: String(key),
+        ok: false,
+        state: "error",
+        error: toErrorMessage(error),
+      };
+    }
+
+    try {
+      const resolvedKey = key as PluginKey;
+      const handle = this.ensureHandle(resolvedKey);
+      const runtime = this.ensureRuntime(resolvedKey);
+      const command: SendCommandOptions = { payload };
+      return await runSendLifecycle({ handle, runtime, command });
+    } catch (error) {
+      return this.handleLifecycleError(key as PluginKey, "SEND_FAILED", error);
+    }
+  }
+
+  async state(ref: PluginRef): Promise<StateResult> {
+    let key: string = typeof ref === "string" ? ref : "unknown";
+    try {
+      key = this.resolvePluginKey(ref);
+    } catch (error) {
+      return {
+        key: String(key),
+        ok: false,
+        managerState: "error",
+        error: toErrorMessage(error),
+      };
+    }
+
+    const resolvedKey = key as PluginKey;
+    const runtime = this.ensureRuntime(resolvedKey);
+
+    try {
+      const handle = this.ensureHandle(resolvedKey);
+      const pluginState = await runStateLifecycle({ handle, runtime });
+      return {
+        key: resolvedKey,
+        ok: true,
+        managerState: runtime.state,
+        pluginState,
+      };
+    } catch (error) {
+      const message = toErrorMessage(error);
+      runtime.state = "error";
+      runtime.lastError = message;
+      return {
+        key: resolvedKey,
+        ok: false,
+        managerState: runtime.state,
+        error: message,
+      };
+    }
+  }
+
+  async offlineAll(): Promise<LifecycleActionResult[]> {
+    const results: LifecycleActionResult[] = [];
+
+    for (const [key, runtime] of this.runtime.entries()) {
+      if (runtime.state !== "online" && runtime.state !== "error") {
+        continue;
+      }
+
+      try {
+        const handle = this.ensureHandle(key);
+        const result = await runOfflineLifecycle({ handle, runtime });
+        results.push(result);
+      } catch (error) {
+        results.push(this.handleLifecycleError(key, "OFFLINE_FAILED", error));
+      }
+    }
+
+    return results;
+  }
+
+  private ensureRuntime(key: PluginKey): PluginRuntime {
+    const runtime = this.runtime.get(key);
+    if (runtime) {
+      return runtime;
+    }
+
+    const created = initializeRuntime();
+    this.runtime.set(key, created);
+    return created;
+  }
+
+  private ensureHandle(key: PluginKey): PluginHandle {
+    const existed = this.handles.get(key);
+    if (existed) {
+      return existed;
+    }
+
+    const descriptor = this.registry.get(key);
+    if (!descriptor) {
+      throw new PluginsManagerError(
+        "PLUGIN_NOT_FOUND",
+        `plugin not found: ${key}`
+      );
+    }
+
+    const handle = loadPluginHandle(descriptor);
+    this.handles.set(key, handle);
+    const runtime = this.ensureRuntime(key);
+    runtime.moduleLoaded = true;
+
+    return handle;
+  }
+
+  private resolveOnlineOptions(
+    key: PluginKey,
+    startupOptions: StartupOptions
+  ): OnlineOptions | undefined {
+    const perPlugin = startupOptions.perPluginOnlineOptions ?? {};
+
+    const direct = perPlugin[key];
+    if (direct) {
+      return direct;
+    }
+
+    const normalizedName = key.split(":")[1];
+    const byName = perPlugin[normalizedName];
+    if (byName) {
+      return byName;
+    }
+
+    if (startupOptions.defaultOnlineOptions) {
+      return startupOptions.defaultOnlineOptions as OnlineOptions;
+    }
+
+    return undefined;
+  }
+
+  private async startPlugin(
+    key: PluginKey,
+    startupOptions: StartupOptions
+  ): Promise<LifecycleActionResult> {
+    try {
+      const handle = this.ensureHandle(key);
+      const runtime = this.ensureRuntime(key);
+      const onlineOptions = this.resolveOnlineOptions(key, startupOptions);
+
+      const result = await runOnlineLifecycle({
+        handle,
+        runtime,
+        command: { onlineOptions },
+      });
+
+      return result;
+    } catch (error) {
+      return this.handleLifecycleError(key, "ONLINE_FAILED", error);
+    }
+  }
+
+  private async onlineMany(requestedKeys: PluginKey[], startupOptions: StartupOptions): Promise<StartupReport> {
+    const dedupRequested = [...new Set(requestedKeys)];
+    const requestedSet = new Set<PluginKey>(dedupRequested);
+    const failedKeys = new Set<PluginKey>();
+
+    const report: StartupReport = {
+      requested: dedupRequested,
+      started: [],
+      skipped: [],
+      failed: [],
+      blocked: [],
+      cycles: [],
+    };
+
+    const pending = new Set<PluginKey>();
+    for (const key of dedupRequested) {
+      const runtime = this.ensureRuntime(key);
+      if (runtime.state === "online") {
+        report.skipped.push(key);
+      } else {
+        pending.add(key);
+      }
+    }
+
+    const cycles = detectDependencyCycles(pending, this.registry);
+    report.cycles = cycles;
+    for (const cycle of cycles) {
+      for (const key of cycle) {
+        if (!pending.has(key)) {
+          continue;
+        }
+
+        pending.delete(key);
+        failedKeys.add(key);
+        const runtime = this.ensureRuntime(key);
+        runtime.state = "blocked";
+        runtime.lastError = "dependency cycle detected";
+        report.blocked.push(toFailure(key, "dependency cycle detected"));
+      }
+    }
+
+    while (pending.size > 0) {
+      const ready: PluginKey[] = [];
+
+      for (const key of Array.from(pending)) {
+        const descriptor = this.registry.get(key);
+        if (!descriptor) {
+          pending.delete(key);
+          failedKeys.add(key);
+          report.failed.push(toFailure(key, "plugin descriptor missing"));
+          continue;
+        }
+
+        const status = evaluateDependencyStatus({
+          descriptor,
+          registry: this.registry,
+          runtime: this.runtime,
+          requestedKeys: requestedSet,
+          failedKeys,
+        });
+
+        if (status.kind === "satisfied") {
+          ready.push(key);
+          continue;
+        }
+
+        if (status.kind === "failed") {
+          pending.delete(key);
+          failedKeys.add(key);
+          const runtime = this.ensureRuntime(key);
+          runtime.state = "blocked";
+          runtime.lastError = status.reason;
+          report.failed.push(toFailure(key, status.reason));
+        }
+      }
+
+      if (ready.length === 0) {
+        for (const key of Array.from(pending)) {
+          pending.delete(key);
+          failedKeys.add(key);
+          const runtime = this.ensureRuntime(key);
+          runtime.state = "blocked";
+          runtime.lastError = "dependency deadlock";
+          report.blocked.push(toFailure(key, "dependency deadlock"));
+        }
+        break;
+      }
+
+      ready.sort((a, b) => {
+        const weightA = this.registry.get(a)?.startupWeight ?? 0;
+        const weightB = this.registry.get(b)?.startupWeight ?? 0;
+        return weightB - weightA;
+      });
+
+      const waveResults = await Promise.all(
+        ready.map((key) => this.startPlugin(key, startupOptions))
+      );
+
+      for (const result of waveResults) {
+        const key = result.key as PluginKey;
+        pending.delete(key);
+
+        if (result.ok) {
+          report.started.push(key);
+          continue;
+        }
+
+        failedKeys.add(key);
+        report.failed.push(toFailure(key, result.error ?? "online failed"));
+      }
+    }
+
+    return report;
+  }
+
+  private handleLifecycleError(
+    key: PluginKey,
+    code: keyof typeof PluginsManagerErrorCode,
+    error: unknown
+  ): LifecycleActionResult {
+    const message = toErrorMessage(error);
+    const runtime = this.ensureRuntime(key);
+
+    runtime.state = "error";
+    runtime.lastError = message;
+
+    this.logger.error(`${code} ${key}: ${message}`);
+
+    return {
+      key,
+      ok: false,
+      state: runtime.state,
+      error: message,
+    };
+  }
+}
+
+const pluginsManager = new PluginsManager();
+
+export default pluginsManager;
+

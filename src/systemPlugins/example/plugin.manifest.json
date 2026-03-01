@@ -8,7 +8,7 @@
   },
 
   "runtime": {
-    "priority": 0,
+    "startupWeight": 0,
     "method" : ["local" , "remote"],
     "onlineOptions": {
       "oneOf" : [
@@ -56,3 +56,4 @@
     ]
   }
 }
+

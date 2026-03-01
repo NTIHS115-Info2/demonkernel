@@ -1,19 +1,30 @@
-// src/core/plugin-sdk/errors.ts
 import type { PluginError } from "./types";
 
 export const CoreErrorCode = {
-  MANIFEST_INVALID: "MANIFEST_INVALID",     // 插件清單格式錯誤
-  METHOD_NOT_ALLOWED: "METHOD_NOT_ALLOWED", // 不支援的 method
-  OPTIONS_INVALID: "OPTIONS_INVALID",       // onlineOptions 格式錯誤
-  STRATEGY_NOT_FOUND: "STRATEGY_NOT_FOUND", // 找不到對應的 strategy
-  LIFECYCLE_INVALID: "LIFECYCLE_INVALID",   // 插件生命週期錯誤
-  ONLINE_FAILED: "ONLINE_FAILED",           // 上線失敗
-  OFFLINE_FAILED: "OFFLINE_FAILED",         // 下線失敗
-  RESTART_FAILED: "RESTART_FAILED",         // 重啟失敗
-  RUNNING_FAILED: "RUNNING_FAILED",         // 執行失敗
+  MANIFEST_INVALID: "MANIFEST_INVALID",
+  METHOD_NOT_ALLOWED: "METHOD_NOT_ALLOWED",
+  OPTIONS_INVALID: "OPTIONS_INVALID",
+  STRATEGY_NOT_FOUND: "STRATEGY_NOT_FOUND",
+  LIFECYCLE_INVALID: "LIFECYCLE_INVALID",
+  ONLINE_FAILED: "ONLINE_FAILED",
+  OFFLINE_FAILED: "OFFLINE_FAILED",
+  RESTART_FAILED: "RESTART_FAILED",
+  RUNNING_FAILED: "RUNNING_FAILED",
 } as const;
 
 export type CoreErrorCodeKey = keyof typeof CoreErrorCode;
+
+export class PluginSdkError extends Error {
+  code: CoreErrorCodeKey;
+  cause?: unknown;
+
+  constructor(code: CoreErrorCodeKey, message: string, cause?: unknown) {
+    super(message);
+    this.name = "PluginSdkError";
+    this.code = code;
+    this.cause = cause;
+  }
+}
 
 export function makeError(
   code: CoreErrorCodeKey,
