@@ -72,6 +72,9 @@ src/core/pluginsManager/
 
 ```ts
 import pluginsManager from "@core/pluginsManager";
+import { createKernelLogger } from "@core/logger";
+
+const logger = createKernelLogger("plugins-manager-readme");
 
 pluginsManager.discoverPlugins();
 
@@ -80,6 +83,24 @@ const report = await pluginsManager.onlineAll({
 });
 
 if (report.failed.length > 0 || report.blocked.length > 0) {
-  console.error(report);
+  logger.error("startup report contains failures", { report });
 }
 ```
+
+## Logger 注入範例
+
+`PluginsManagerOptions.logger` 可注入自訂 logger 實作：
+
+```ts
+import { PluginsManager } from "@core/pluginsManager";
+import { createKernelLogger } from "@core/logger";
+
+const manager = new PluginsManager({
+  logger: createKernelLogger("plugins-manager").child({ subsystem: "manager" }),
+});
+```
+
+參考：
+
+- [`docs/logger/integration-tools-plugins-manager.md`](../../../docs/logger/integration-tools-plugins-manager.md)
+- [`docs/logger/api-reference.md`](../../../docs/logger/api-reference.md)

@@ -1,10 +1,15 @@
 import pluginsManager from "./core/pluginsManager";
+import { createKernelLogger, shutdownKernelLogger } from "./core/logger";
 import type { OnlineMethod, OnlineOptions } from "./core/plugin-sdk";
 
 type CliArgs = {
   plugin?: string;
   options: OnlineOptions;
 };
+
+const startupLogger = createKernelLogger("kernel-startup", {
+  component: "entrypoint",
+});
 
 function parseCliArgs(argv: string[]): CliArgs {
   const options: Record<string, unknown> = {
@@ -58,23 +63,23 @@ function parseCliArgs(argv: string[]): CliArgs {
 
 function printStartupReport(report: ReturnType<typeof pluginsManager.getStartupReport>): void {
   if (report.started.length > 0) {
-    console.log(`[start] started plugins: ${report.started.join(", ")}`);
+    startupLogger.info(`[start] started plugins: ${report.started.join(", ")}`);
   }
 
   if (report.skipped.length > 0) {
-    console.log(`[start] skipped plugins: ${report.skipped.join(", ")}`);
+    startupLogger.info(`[start] skipped plugins: ${report.skipped.join(", ")}`);
   }
 
   for (const failure of report.failed) {
-    console.error(`[start] failed ${failure.key}: ${failure.reason}`);
+    startupLogger.error(`[start] failed ${failure.key}: ${failure.reason}`);
   }
 
   for (const blocked of report.blocked) {
-    console.error(`[start] blocked ${blocked.key}: ${blocked.reason}`);
+    startupLogger.error(`[start] blocked ${blocked.key}: ${blocked.reason}`);
   }
 
   for (const cycle of report.cycles) {
-    console.error(`[start] cycle detected: ${cycle.join(" -> ")}`);
+    startupLogger.error(`[start] cycle detected: ${cycle.join(" -> ")}`);
   }
 }
 
@@ -89,7 +94,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
   const dependencyValidation = pluginsManager.validateDependencies();
   if (!dependencyValidation.ok) {
     for (const message of dependencyValidation.errors) {
-      console.warn(`[start] dependency validation warning: ${message}`);
+      startupLogger.warn(`[start] dependency validation warning: ${message}`);
     }
   }
 
@@ -102,7 +107,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       throw new Error(`online failed for ${result.key}: ${result.error ?? "unknown error"}`);
     }
 
-    console.log(`[start] plugin online ok: ${result.key}`);
+    startupLogger.info(`[start] plugin online ok: ${result.key}`);
   } else {
     const report = await pluginsManager.onlineAll({
       defaultOnlineOptions: cli.options,
@@ -114,19 +119,28 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       throw new Error("some plugins failed or were blocked during startup");
     }
 
-    console.log("[start] all plugins online");
+    startupLogger.info("[start] all plugins online");
   }
 
+  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
-    console.log("[start] shutting down...");
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    startupLogger.info("[start] shutting down...");
     const results = await pluginsManager.offlineAll();
 
     for (const result of results) {
       if (!result.ok) {
-        console.error(`[start] offline failed for ${result.key}: ${result.error ?? "unknown error"}`);
+        startupLogger.error(
+          `[start] offline failed for ${result.key}: ${result.error ?? "unknown error"}`
+        );
       }
     }
 
+    await shutdownKernelLogger();
     process.exit(0);
   };
 
@@ -141,8 +155,14 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
 
 if (require.main === module) {
   run().catch((error) => {
-    console.error("[start] fatal:", error);
-    process.exit(1);
+    startupLogger.error("[start] fatal:", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    shutdownKernelLogger()
+      .catch(() => undefined)
+      .finally(() => {
+        process.exit(1);
+      });
   });
 }
 

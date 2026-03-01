@@ -1,4 +1,5 @@
 import type { OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
+import { createKernelLogger } from "../logger";
 
 import {
   PluginsManagerError,
@@ -41,12 +42,7 @@ import type {
   StateResult,
 } from "./types";
 
-const defaultLogger: ManagerLogger = {
-  info: (...args: unknown[]) => console.log("[PluginsManager]", ...args),
-  warn: (...args: unknown[]) => console.warn("[PluginsManager]", ...args),
-  error: (...args: unknown[]) => console.error("[PluginsManager]", ...args),
-  debug: (...args: unknown[]) => console.debug("[PluginsManager]", ...args),
-};
+const defaultLogger: ManagerLogger = createKernelLogger("plugins-manager");
 
 function initializeRuntime(): PluginRuntime {
   return {

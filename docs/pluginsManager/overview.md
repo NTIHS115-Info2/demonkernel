@@ -46,7 +46,30 @@ await pluginsManager.offlineAll();
 
 即使某些插件 offline 失敗，manager 仍會繼續處理其他插件。
 
-## 6. 相關文件
+## 6. ManagerLogger 注入與預設行為
+
+`PluginsManagerOptions.logger` 維持既有型別：
+
+- `info(...args)`
+- `warn(...args)`
+- `error(...args)`
+- `debug?(...args)`
+
+若不注入，`pluginsManager` 會使用 `@core/logger` 的預設 logger。
+
+```ts
+import { createKernelLogger } from "@core/logger";
+import { PluginsManager } from "@core/pluginsManager";
+
+const manager = new PluginsManager({
+  logger: createKernelLogger("plugins-manager").child({ subsystem: "manager" }),
+});
+```
+
+更多整合方式：[`docs/logger/integration-tools-plugins-manager.md`](../logger/integration-tools-plugins-manager.md)
+
+## 7. 相關文件
 
 - 核心技術文件：[`src/core/pluginsManager/README.md`](../../src/core/pluginsManager/README.md)
 - 遷移說明：[`docs/pluginsManager/migration.md`](./migration.md)
+- Logger 概覽：[`docs/logger/overview.md`](../logger/overview.md)
