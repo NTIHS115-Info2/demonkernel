@@ -20,6 +20,7 @@
 - `runtime`：必填
 - `dependencies`：選填（未提供時視為空依賴）
 - `io`：選填（文件用途，manager 不做強型別驗證）
+- `capabilities`：選填（僅 `system` 插件可使用）
 
 ## 2. meta（必填）
 
@@ -125,7 +126,56 @@
 - `io.output?: Record<string, unknown>`
 - `io.examples?: Array<Record<string, unknown>>`
 
-## 7. 完整範例
+## 7. capabilities（選填，僅 system）
+
+```json
+{
+  "capabilities": {
+    "provides": [
+      "system.echo.message",
+      {
+        "id": "system.custom.answer",
+        "displayName": "Custom Answer",
+        "description": "Custom capability definition from plugin manifest.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "question": { "type": "string" }
+          },
+          "required": ["question"],
+          "additionalProperties": false
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "answer": { "type": "string" }
+          },
+          "required": ["answer"],
+          "additionalProperties": false
+        },
+        "testCases": [
+          {
+            "id": "answer-basic",
+            "input": { "question": "hello" },
+            "expectedOutput": { "answer": "world" }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+規則：
+
+1. `capabilities.provides` 必須是非空陣列。
+2. 陣列元素可為：
+   - `string`：預設能力表 ID。
+   - `object`：完整能力表定義。
+3. 若插件型別不是 `system`，不可宣告 `capabilities`。
+
+## 8. 完整範例
 
 ```json
 {
@@ -177,6 +227,9 @@
         "output": { "reply": "world" }
       }
     ]
+  },
+  "capabilities": {
+    "provides": ["system.echo.message"]
   }
 }
 ```

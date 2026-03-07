@@ -1,5 +1,6 @@
 import type { OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
 import { createKernelLogger } from "../logger";
+import { CapabilitiesManager } from "../capabilities";
 
 import {
   PluginsManagerError,
@@ -84,6 +85,7 @@ export class PluginsManager {
   readonly systemPluginsPath: string;
 
   private readonly logger: ManagerLogger;
+  private readonly capabilitiesManager: CapabilitiesManager;
   private readonly registry = new Map<PluginKey, PluginDescriptor>();
   private readonly invalidRegistry = new Map<string, {
     type: PluginType;
@@ -108,6 +110,7 @@ export class PluginsManager {
     this.skillPluginsPath = options.skillPluginsPath ?? defaults.skillPluginsPath;
     this.systemPluginsPath = options.systemPluginsPath ?? defaults.systemPluginsPath;
     this.logger = options.logger ?? defaultLogger;
+    this.capabilitiesManager = options.capabilitiesManager ?? new CapabilitiesManager();
   }
 
   discoverPlugins(): ScanSummary {
@@ -116,6 +119,7 @@ export class PluginsManager {
 
     this.registry.clear();
     this.invalidRegistry.clear();
+    this.capabilitiesManager.reset();
 
     const skillSummary = discoverPluginsInDirectory(
       "skill",
@@ -127,7 +131,8 @@ export class PluginsManager {
       "system",
       this.systemPluginsPath,
       this.registry,
-      this.invalidRegistry
+      this.invalidRegistry,
+      this.capabilitiesManager
     );
 
     const summary = buildScanSummary(skillSummary, systemSummary);

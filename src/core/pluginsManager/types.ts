@@ -8,6 +8,7 @@ import type {
   SendOptions,
   StateCode,
 } from "../plugin-sdk";
+import type { CapabilitiesManager } from "../capabilities";
 
 export type PluginKey = `${PluginType}:${string}`;
 export type PluginRef = PluginKey | string;
@@ -25,6 +26,7 @@ export interface PluginsManagerOptions {
   skillPluginsPath?: string;
   systemPluginsPath?: string;
   logger?: ManagerLogger;
+  capabilitiesManager?: CapabilitiesManager;
 }
 
 export interface NormalizedDependencies {

@@ -6,6 +6,43 @@ export type PluginError = {
   message: string;
   cause?: unknown;
 };
+export type CapabilitySchemaType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "null";
+
+export interface CapabilitySchema {
+  type: CapabilitySchemaType | CapabilitySchemaType[];
+  description?: string;
+  properties?: Record<string, CapabilitySchema>;
+  required?: string[];
+  items?: CapabilitySchema;
+  enum?: unknown[];
+  additionalProperties?: boolean | CapabilitySchema;
+}
+
+export interface CapabilityTestCase {
+  id: string;
+  description?: string;
+  input: unknown;
+  expectedOutput?: unknown;
+  expectError?: boolean;
+}
+
+export interface CapabilityDefinition {
+  id: string;
+  displayName: string;
+  description: string;
+  version: string;
+  input: CapabilitySchema;
+  output: CapabilitySchema;
+  testCases?: CapabilityTestCase[];
+}
+
+export type CapabilityProvideEntry = string | CapabilityDefinition;
 
 // ----------------- Manifest 相關型別 -----------------
 
@@ -42,6 +79,9 @@ export interface PluginManifest {
     input?: Record<string, unknown>;
     output?: Record<string, unknown>;
     examples?: Array<Record<string, unknown>>;
+  };
+  capabilities?: {
+    provides: CapabilityProvideEntry[];
   };
 }
 
