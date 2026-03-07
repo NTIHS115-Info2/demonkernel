@@ -8,6 +8,7 @@ import type {
   SendOptions,
   StateCode,
 } from "../plugin-sdk";
+import type { CapabilitiesManager } from "../capabilities";
 
 export type PluginKey = `${PluginType}:${string}`;
 export type PluginRef = PluginKey | string;
@@ -25,6 +26,7 @@ export interface PluginsManagerOptions {
   skillPluginsPath?: string;
   systemPluginsPath?: string;
   logger?: ManagerLogger;
+  capabilitiesManager?: CapabilitiesManager;
 }
 
 export interface NormalizedDependencies {
@@ -140,6 +142,13 @@ export type DependencyStatus =
   | { kind: "satisfied" }
   | { kind: "waiting"; dependencyKey: PluginKey }
   | { kind: "failed"; reason: string };
+
+export type DependencyComponentMap = Map<PluginKey, PluginKey[]>;
+
+export interface DependencyGraphAnalysis {
+  cycles: PluginKey[][];
+  componentByKey: DependencyComponentMap;
+}
 
 export interface OnlineCommandOptions {
   onlineOptions?: OnlineOptions;

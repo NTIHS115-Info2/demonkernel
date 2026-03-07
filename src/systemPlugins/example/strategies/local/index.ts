@@ -38,6 +38,14 @@ export = {
 
   async send(options: SendOptions): Promise<unknown> {
     logger.info("system example plugin(local) send with options", { options });
-    return undefined;
+    const message = options.message;
+    if (typeof message !== "string") {
+      throw new Error("payload.message must be a string");
+    }
+
+    return {
+      reply: message,
+      method: "local",
+    };
   },
 };

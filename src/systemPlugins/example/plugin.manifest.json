@@ -43,16 +43,23 @@
 
   "io": {
     "input": {
-      "text": "string"
+      "message": "string"
     },
     "output": {
-      "reply": "string"
+      "reply": "string",
+      "method": "local | remote"
     },
     "examples": [
       {
-        "input": { "text": "hello" },
-        "output": { "reply": "world" }
+        "input": { "message": "hello" },
+        "output": { "reply": "hello", "method": "local" }
       }
+    ]
+  },
+
+  "capabilities": {
+    "provides": [
+      "system.echo.message"
     ]
   }
 }

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import defaultCapabilitiesManager, { CapabilitiesManager } from "../../src/core/capabilities";
 import { PluginsManager } from "../../src/core/pluginsManager";
 
 type PluginType = "skill" | "system";
@@ -17,6 +18,9 @@ type FakePluginOptions = {
   dependencies?: {
     skill?: Record<string, string>;
     system?: Record<string, string>;
+  };
+  capabilities?: {
+    provides: Array<string | Record<string, unknown>>;
   };
   throwOnOnline?: boolean;
   throwOnOffline?: boolean;
@@ -78,6 +82,7 @@ function createFakePlugin(basePath: string, options: FakePluginOptions): void {
       skill: options.dependencies?.skill ?? {},
       system: options.dependencies?.system ?? {},
     },
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
   };
 
   writeJson(path.join(pluginDir, "plugin.manifest.json"), manifest);
@@ -134,9 +139,11 @@ module.exports = {
 
 describe("pluginsManager", () => {
   let tempRoot: { root: string; skillPath: string; systemPath: string };
+  let capabilitiesManager: CapabilitiesManager;
 
   beforeEach(() => {
     tempRoot = createTempPluginRoot();
+    capabilitiesManager = new CapabilitiesManager();
     (globalThis as any).__pmEvents = [];
   });
 
@@ -154,6 +161,7 @@ describe("pluginsManager", () => {
         warn: () => undefined,
         error: () => undefined,
       },
+      capabilitiesManager,
     });
   }
 
@@ -332,10 +340,11 @@ describe("pluginsManager", () => {
     expect(consumerFailure?.reason).toContain("dependency failed");
   });
 
-  it("detects and blocks cycle dependencies", async () => {
+  it("starts two-node cyclic dependencies by startupWeight", async () => {
     createFakePlugin(tempRoot.skillPath, {
       name: "a",
       type: "skill",
+      startupWeight: 20,
       dependencies: {
         skill: { b: "1.0.0" },
       },
@@ -344,6 +353,7 @@ describe("pluginsManager", () => {
     createFakePlugin(tempRoot.skillPath, {
       name: "b",
       type: "skill",
+      startupWeight: 10,
       dependencies: {
         skill: { a: "1.0.0" },
       },
@@ -354,9 +364,180 @@ describe("pluginsManager", () => {
 
     const report = await manager.onlineAll();
 
-    expect(report.started).toHaveLength(0);
-    expect(report.blocked.length).toBeGreaterThanOrEqual(2);
+    expect(report.failed).toHaveLength(0);
+    expect(report.blocked).toHaveLength(0);
+    expect(report.started).toEqual(["skill:a", "skill:b"]);
     expect(report.cycles.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("starts equal-weight cyclic dependencies in the same wave", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "a",
+      type: "skill",
+      startupWeight: 10,
+      onlineDelayMs: 120,
+      dependencies: {
+        skill: { b: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "b",
+      type: "skill",
+      startupWeight: 10,
+      onlineDelayMs: 120,
+      dependencies: {
+        skill: { a: "1.0.0" },
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const start = Date.now();
+    const report = await manager.onlineAll();
+    const elapsed = Date.now() - start;
+
+    expect(report.failed).toHaveLength(0);
+    expect(report.blocked).toHaveLength(0);
+    expect(report.started).toEqual(["skill:a", "skill:b"]);
+    expect((globalThis as any).__pmEvents.slice(0, 2)).toEqual([
+      "online:skill:a",
+      "online:skill:b",
+    ]);
+    expect(elapsed).toBeLessThan(230);
+  });
+
+  it("handles three-node cycle with mixed startupWeight by waves", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "a",
+      type: "skill",
+      startupWeight: 30,
+      dependencies: {
+        skill: { b: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "b",
+      type: "skill",
+      startupWeight: 20,
+      dependencies: {
+        skill: { c: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "c",
+      type: "skill",
+      startupWeight: 10,
+      dependencies: {
+        skill: { a: "1.0.0" },
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const report = await manager.onlineAll();
+
+    expect(report.failed).toHaveLength(0);
+    expect(report.blocked).toHaveLength(0);
+    expect(report.started).toEqual(["skill:a", "skill:b", "skill:c"]);
+    expect(report.cycles.some((cycle) => cycle.includes("skill:a"))).toBe(true);
+  });
+
+  it("handles multi-dependency dense SCC: A->BCD, B/C/D->A", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "a",
+      type: "skill",
+      startupWeight: 40,
+      dependencies: {
+        skill: { b: "1.0.0", c: "1.0.0", d: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "b",
+      type: "skill",
+      startupWeight: 20,
+      dependencies: {
+        skill: { a: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "c",
+      type: "skill",
+      startupWeight: 20,
+      dependencies: {
+        skill: { a: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "d",
+      type: "skill",
+      startupWeight: 10,
+      dependencies: {
+        skill: { a: "1.0.0" },
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const report = await manager.onlineAll();
+
+    expect(report.failed).toHaveLength(0);
+    expect(report.blocked).toHaveLength(0);
+    expect(report.started).toEqual(["skill:a", "skill:b", "skill:c", "skill:d"]);
+    expect(report.cycles.some((cycle) => cycle.includes("skill:a"))).toBe(true);
+  });
+
+  it("handles mixed graph: C outside SCC, then A/B/D SCC by weight", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "a",
+      type: "skill",
+      startupWeight: 40,
+      dependencies: {
+        skill: { b: "1.0.0", c: "1.0.0", d: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "b",
+      type: "skill",
+      startupWeight: 30,
+      dependencies: {
+        skill: { c: "1.0.0", d: "1.0.0" },
+      },
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "c",
+      type: "skill",
+      startupWeight: 50,
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "d",
+      type: "skill",
+      startupWeight: 20,
+      dependencies: {
+        skill: { a: "1.0.0", c: "1.0.0" },
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const report = await manager.onlineAll();
+
+    expect(report.failed).toHaveLength(0);
+    expect(report.blocked).toHaveLength(0);
+    expect(report.started).toEqual(["skill:c", "skill:a", "skill:b", "skill:d"]);
+    expect(report.cycles.some((cycle) => cycle.includes("skill:a") && cycle.includes("skill:d"))).toBe(true);
   });
 
   it("fails on exact dependency version mismatch", async () => {
@@ -437,5 +618,71 @@ describe("pluginsManager", () => {
 
     const goodRuntime = manager.getRuntimeStatus().find((item) => item.key === "skill:good");
     expect(goodRuntime?.state).toBe("offline");
+  });
+
+  it("registers system plugin capabilities during discovery", () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "cap-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+
+    expect(summary.invalid).toBe(0);
+    expect(capabilitiesManager.listProviders("system.echo.message")).toEqual(["system:cap-system"]);
+    expect(capabilitiesManager.listCapabilitiesByPlugin("system:cap-system").map((item) => item.id)).toEqual([
+      "system.echo.message",
+    ]);
+  });
+
+  it("marks system plugin invalid when capability default id is unknown", () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "bad-cap-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.missing.capability"],
+      },
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+
+    expect(summary.registered).toBe(0);
+    expect(summary.invalid).toBe(1);
+
+    const invalid = manager.getInvalidPlugins();
+    expect(invalid[0].reason).toContain("unknown default capability id");
+  });
+
+  it("uses isolated capabilities manager when options.capabilitiesManager is not provided", () => {
+    defaultCapabilitiesManager.reset();
+
+    createFakePlugin(tempRoot.systemPath, {
+      name: "isolated-cap-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = new PluginsManager({
+      skillPluginsPath: tempRoot.skillPath,
+      systemPluginsPath: tempRoot.systemPath,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+    const summary = manager.discoverPlugins();
+
+    expect(summary.invalid).toBe(0);
+    expect(defaultCapabilitiesManager.listProviders("system.echo.message")).toEqual([]);
+
+    defaultCapabilitiesManager.reset();
   });
 });

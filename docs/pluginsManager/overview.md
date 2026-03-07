@@ -8,6 +8,7 @@
 - 同時管理 `skillPlugins` 與 `systemPlugins`。
 - 掃描並驗證 `plugin.manifest.json`。
 - 非同步上線：依賴感知、同波並行。
+- 循環依賴（SCC）支援：依 `startupWeight` 分波啟動。
 - 管理器統一處理 lifecycle throw。
 
 ## 2. 啟動前提
@@ -16,7 +17,15 @@
 - manifest 必須使用 `runtime.startupWeight`（不接受 `priority`）。
 - 依賴版本使用精確比對。
 
-## 3. 典型流程
+## 3. 依賴排程規則
+
+- 依賴已 online 且版本相符：可啟動。
+- 依賴不在啟動佇列且未 online：失敗。
+- 依賴啟動失敗：依賴方失敗。
+- 循環依賴（SCC）：高 `startupWeight` 先啟動；同權重同波並行。
+- `blocked` 僅表示當前無法推進（deadlock），不是一般循環依賴的預設結果。
+
+## 4. 典型流程
 
 ```ts
 import pluginsManager from "@core/pluginsManager";
@@ -31,14 +40,14 @@ const report = await pluginsManager.onlineAll({
 });
 ```
 
-## 4. 回報與觀測
+## 5. 回報與觀測
 
 - `getRegistrySnapshot()`：已註冊插件快照。
 - `getInvalidPlugins()`：無效插件與原因。
 - `getRuntimeStatus()`：執行期狀態（online/error/blocked）。
 - `getStartupReport()`：最近一次上線結果。
 
-## 5. 關機
+## 6. 關機
 
 ```ts
 await pluginsManager.offlineAll();
@@ -46,7 +55,7 @@ await pluginsManager.offlineAll();
 
 即使某些插件 offline 失敗，manager 仍會繼續處理其他插件。
 
-## 6. ManagerLogger 注入與預設行為
+## 7. ManagerLogger 注入與預設行為
 
 `PluginsManagerOptions.logger` 維持既有型別：
 
@@ -68,8 +77,9 @@ const manager = new PluginsManager({
 
 更多整合方式：[`docs/logger/integration-tools-plugins-manager.md`](../logger/integration-tools-plugins-manager.md)
 
-## 7. 相關文件
+## 8. 相關文件
 
 - 核心技術文件：[`src/core/pluginsManager/README.md`](../../src/core/pluginsManager/README.md)
 - 遷移說明：[`docs/pluginsManager/migration.md`](./migration.md)
+- Manifest 結構：[`docs/pluginsManager/plugin-manifest-schema.md`](./plugin-manifest-schema.md)
 - Logger 概覽：[`docs/logger/overview.md`](../logger/overview.md)

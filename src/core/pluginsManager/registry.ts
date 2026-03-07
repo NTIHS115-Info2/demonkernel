@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { PluginManifest, PluginType } from "../plugin-sdk";
 import { validateManifest } from "../plugin-sdk";
+import type { CapabilitiesManager } from "../capabilities";
 
 import { PluginsManagerError } from "./errors";
 import type {
@@ -76,7 +77,8 @@ export function discoverPluginsInDirectory(
   type: PluginType,
   basePath: string,
   registry: Map<PluginKey, PluginDescriptor>,
-  invalidRegistry: Map<string, InvalidPluginRecord>
+  invalidRegistry: Map<string, InvalidPluginRecord>,
+  capabilitiesManager?: CapabilitiesManager
 ): ScanSummaryByType {
   const summary = emptyTypeSummary();
 
@@ -133,6 +135,15 @@ export function discoverPluginsInDirectory(
           "MANIFEST_INVALID",
           `duplicate plugin key detected: ${key}`
         );
+      }
+
+      if (type === "system" && capabilitiesManager) {
+        capabilitiesManager.registerFromManifest({
+          pluginKey: key,
+          pluginType: type,
+          provides: manifest.capabilities?.provides,
+          manifestPath,
+        });
       }
 
       const descriptor: PluginDescriptor = {
