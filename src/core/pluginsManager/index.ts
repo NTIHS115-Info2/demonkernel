@@ -21,7 +21,7 @@ import {
   discoverPluginsInDirectory,
   normalizePluginName,
 } from "./registry";
-import { detectDependencyCycles, evaluateDependencyStatus } from "./dependency";
+import { analyzeDependencyGraph, evaluateDependencyStatus } from "./dependency";
 import type {
   LifecycleActionResult,
   ManagerLogger,
@@ -540,22 +540,8 @@ export class PluginsManager {
       }
     }
 
-    const cycles = detectDependencyCycles(pending, this.registry);
-    report.cycles = cycles;
-    for (const cycle of cycles) {
-      for (const key of cycle) {
-        if (!pending.has(key)) {
-          continue;
-        }
-
-        pending.delete(key);
-        failedKeys.add(key);
-        const runtime = this.ensureRuntime(key);
-        runtime.state = "blocked";
-        runtime.lastError = "dependency cycle detected";
-        report.blocked.push(toFailure(key, "dependency cycle detected"));
-      }
-    }
+    const dependencyGraph = analyzeDependencyGraph(pending, this.registry);
+    report.cycles = dependencyGraph.cycles;
 
     while (pending.size > 0) {
       const ready: PluginKey[] = [];
@@ -575,6 +561,7 @@ export class PluginsManager {
           runtime: this.runtime,
           requestedKeys: requestedSet,
           failedKeys,
+          componentByKey: dependencyGraph.componentByKey,
         });
 
         if (status.kind === "satisfied") {
@@ -607,7 +594,10 @@ export class PluginsManager {
       ready.sort((a, b) => {
         const weightA = this.registry.get(a)?.startupWeight ?? 0;
         const weightB = this.registry.get(b)?.startupWeight ?? 0;
-        return weightB - weightA;
+        if (weightA !== weightB) {
+          return weightB - weightA;
+        }
+        return a.localeCompare(b);
       });
 
       const waveResults = await Promise.all(

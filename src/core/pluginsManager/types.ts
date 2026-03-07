@@ -141,6 +141,13 @@ export type DependencyStatus =
   | { kind: "waiting"; dependencyKey: PluginKey }
   | { kind: "failed"; reason: string };
 
+export type DependencyComponentMap = Map<PluginKey, PluginKey[]>;
+
+export interface DependencyGraphAnalysis {
+  cycles: PluginKey[][];
+  componentByKey: DependencyComponentMap;
+}
+
 export interface OnlineCommandOptions {
   onlineOptions?: OnlineOptions;
 }

@@ -34,9 +34,10 @@ src/core/pluginsManager/
 1. `discoverPlugins()`：掃描/驗證、建立 registry。
 2. `validateDependencies()`：靜態檢查缺依賴與版本不符。
 3. `onlineAll()`：
-   - 先檢查 cycle。
+   - 分析依賴圖與循環群組（SCC）。
    - 每波找出依賴已滿足的插件。
    - 同波插件依 `startupWeight` 由高到低排序後並行上線。
+   - 循環群組內由較高 `startupWeight` 先啟動；同權重同波啟動。
    - 若依賴不在佇列且未 online，直接失敗。
    - 若依賴上線失敗，依賴方立即失敗。
 
@@ -46,7 +47,7 @@ src/core/pluginsManager/
 - 依賴未 online 但在本次佇列：等待。
 - 依賴不在佇列且未 online：失敗。
 - 依賴失敗：失敗。
-- 循環依賴：直接 `blocked`。
+- 循環依賴（SCC）：依 `startupWeight` 分波啟動；同權重同波。
 
 ## Public API 摘要
 

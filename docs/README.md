@@ -15,8 +15,8 @@
 - [`docs/plugins/example-skill.md`](./plugins/example-skill.md)
 - [`docs/pluginsManager/overview.md`](./pluginsManager/overview.md)
 - [`docs/pluginsManager/migration.md`](./pluginsManager/migration.md)
+- [`docs/pluginsManager/plugin-manifest-schema.md`](./pluginsManager/plugin-manifest-schema.md)
 
 ## UpdateLog
 
 - [`docs/updatelog-spec.md`](./updatelog-spec.md)
-

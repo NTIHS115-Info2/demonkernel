@@ -30,7 +30,10 @@
 2. 依賴不在線但在佇列中：等待。
 3. 依賴不在線且不在佇列：失敗。
 4. 依賴啟動失敗：依賴方失敗。
-5. 循環依賴：直接 blocked。
+5. 循環依賴（SCC）：
+   - `startupWeight` 較高者優先啟動。
+   - `startupWeight` 相同者同波並行啟動。
+   - 僅在無法推進時才會 `blocked`（例如死結）。
 
 ## 5. API 對照
 
@@ -46,4 +49,4 @@
 1. 先改所有 manifest：`priority -> startupWeight`。
 2. 把插件 lifecycle 改為 throw-only。
 3. 將啟動入口改為新 manager。
-4. 補齊依賴版本與 cycle 測試。
+4. 補齊依賴版本與多依賴/SCC 測試。
