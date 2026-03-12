@@ -1,6 +1,7 @@
-import type { OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
+import type { IPlugin, OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
 import { createKernelLogger } from "../logger";
 import { CapabilitiesManager } from "../capabilities";
+import defaultCapabilityRegistry, { CapabilityRegistry } from "../registry";
 
 import {
   PluginsManagerError,
@@ -86,6 +87,7 @@ export class PluginsManager {
 
   private readonly logger: ManagerLogger;
   private readonly capabilitiesManager: CapabilitiesManager;
+  private readonly capabilityRegistry: CapabilityRegistry;
   private readonly registry = new Map<PluginKey, PluginDescriptor>();
   private readonly invalidRegistry = new Map<string, {
     type: PluginType;
@@ -110,7 +112,29 @@ export class PluginsManager {
     this.skillPluginsPath = options.skillPluginsPath ?? defaults.skillPluginsPath;
     this.systemPluginsPath = options.systemPluginsPath ?? defaults.systemPluginsPath;
     this.logger = options.logger ?? defaultLogger;
-    this.capabilitiesManager = options.capabilitiesManager ?? new CapabilitiesManager();
+
+    if (options.capabilitiesManager) {
+      this.capabilitiesManager = options.capabilitiesManager;
+    } else if (options.capabilityRegistry) {
+      this.capabilitiesManager = options.capabilityRegistry.getCapabilitiesManagerInternal();
+    } else {
+      this.capabilitiesManager = new CapabilitiesManager();
+    }
+
+    if (options.capabilityRegistry) {
+      if (!options.capabilityRegistry.isBoundTo(this.capabilitiesManager)) {
+        throw new PluginsManagerError(
+          "MANIFEST_INVALID",
+          "capabilityRegistry and capabilitiesManager must use the same instance"
+        );
+      }
+
+      this.capabilityRegistry = options.capabilityRegistry;
+    } else {
+      this.capabilityRegistry = new CapabilityRegistry({
+        capabilitiesManager: this.capabilitiesManager,
+      });
+    }
   }
 
   discoverPlugins(): ScanSummary {
@@ -119,6 +143,7 @@ export class PluginsManager {
 
     this.registry.clear();
     this.invalidRegistry.clear();
+    this.capabilityRegistry.clearInternal();
     this.capabilitiesManager.reset();
 
     const skillSummary = discoverPluginsInDirectory(
@@ -147,6 +172,8 @@ export class PluginsManager {
         this.handles.set(key, existingHandle);
       }
     }
+
+    this.restoreOnlineCapabilityProviders();
 
     this.logger.info(
       `discovery complete: total=${summary.total}, registered=${summary.registered}, invalid=${summary.invalid}`
@@ -332,7 +359,11 @@ export class PluginsManager {
       const resolvedKey = key as PluginKey;
       const handle = this.ensureHandle(resolvedKey);
       const runtime = this.ensureRuntime(resolvedKey);
-      return await runOfflineLifecycle({ handle, runtime });
+      const result = await runOfflineLifecycle({ handle, runtime });
+      if (result.ok) {
+        this.capabilityRegistry.removeByPluginInternal(resolvedKey);
+      }
+      return result;
     } catch (error) {
       return this.handleLifecycleError(key as PluginKey, "OFFLINE_FAILED", error);
     }
@@ -355,7 +386,10 @@ export class PluginsManager {
       const resolvedKey = key as PluginKey;
       const handle = this.ensureHandle(resolvedKey);
       const runtime = this.ensureRuntime(resolvedKey);
-      return await runRestartLifecycle({ handle, runtime, command });
+
+      const result = await runRestartLifecycle({ handle, runtime, command });
+      this.registerCapabilityProviders(resolvedKey, handle.module);
+      return result;
     } catch (error) {
       return this.handleLifecycleError(key as PluginKey, "RESTART_FAILED", error);
     }
@@ -434,6 +468,9 @@ export class PluginsManager {
       try {
         const handle = this.ensureHandle(key);
         const result = await runOfflineLifecycle({ handle, runtime });
+        if (result.ok) {
+          this.capabilityRegistry.removeByPluginInternal(key);
+        }
         results.push(result);
       } catch (error) {
         results.push(this.handleLifecycleError(key, "OFFLINE_FAILED", error));
@@ -476,6 +513,49 @@ export class PluginsManager {
     return handle;
   }
 
+  private registerCapabilityProviders(key: PluginKey, provider: IPlugin): void {
+    const capabilities = this.capabilitiesManager.listCapabilitiesByPlugin(key);
+    if (capabilities.length === 0) {
+      return;
+    }
+
+    this.capabilityRegistry.removeByPluginInternal(key);
+
+    try {
+      for (const capability of capabilities) {
+        this.capabilityRegistry.register(capability.id, provider, {
+          pluginKey: key,
+          registeredAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      this.capabilityRegistry.removeByPluginInternal(key);
+      throw error;
+    }
+  }
+
+  private restoreOnlineCapabilityProviders(): void {
+    for (const [key, runtime] of this.runtime.entries()) {
+      if (runtime.state !== "online") {
+        continue;
+      }
+
+      const handle = this.handles.get(key);
+      if (!handle) {
+        continue;
+      }
+
+      try {
+        this.registerCapabilityProviders(key, handle.module);
+      } catch (error) {
+        const message = toErrorMessage(error);
+        runtime.state = "error";
+        runtime.lastError = message;
+        this.logger.error(`CAPABILITY_REGISTER_FAILED ${key}: ${message}`);
+      }
+    }
+  }
+
   private resolveOnlineOptions(
     key: PluginKey,
     startupOptions: StartupOptions
@@ -514,6 +594,7 @@ export class PluginsManager {
         runtime,
         command: { onlineOptions },
       });
+      this.registerCapabilityProviders(key, handle.module);
 
       return result;
     } catch (error) {
@@ -648,7 +729,9 @@ export class PluginsManager {
   }
 }
 
-const pluginsManager = new PluginsManager();
+const pluginsManager = new PluginsManager({
+  capabilityRegistry: defaultCapabilityRegistry,
+});
 
 export default pluginsManager;
 

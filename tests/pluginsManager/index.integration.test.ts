@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import pluginsManager from "../../src/core/pluginsManager";
+import capabilityRegistry from "../../src/core/registry";
 import { parseCliArgs, run } from "../../src/index";
 
 describe("src/index integration", () => {
@@ -86,5 +87,13 @@ describe("src/index integration", () => {
       url: "https://example.com",
       token: "abc",
     });
+  });
+
+  it("binds default pluginsManager to the default capability registry", () => {
+    const internal = pluginsManager as unknown as {
+      capabilityRegistry?: unknown;
+    };
+
+    expect(internal.capabilityRegistry).toBe(capabilityRegistry);
   });
 });

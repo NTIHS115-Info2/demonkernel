@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import defaultCapabilitiesManager, { CapabilitiesManager } from "../../src/core/capabilities";
+import { CapabilityRegistry } from "../../src/core/registry";
 import { PluginsManager } from "../../src/core/pluginsManager";
 
 type PluginType = "skill" | "system";
@@ -140,10 +141,12 @@ module.exports = {
 describe("pluginsManager", () => {
   let tempRoot: { root: string; skillPath: string; systemPath: string };
   let capabilitiesManager: CapabilitiesManager;
+  let capabilityRegistry: CapabilityRegistry;
 
   beforeEach(() => {
     tempRoot = createTempPluginRoot();
     capabilitiesManager = new CapabilitiesManager();
+    capabilityRegistry = new CapabilityRegistry({ capabilitiesManager });
     (globalThis as any).__pmEvents = [];
   });
 
@@ -162,6 +165,7 @@ describe("pluginsManager", () => {
         error: () => undefined,
       },
       capabilitiesManager,
+      capabilityRegistry,
     });
   }
 
@@ -594,6 +598,37 @@ describe("pluginsManager", () => {
     expect(runtime?.lastError).toContain("restart failed");
   });
 
+  it("keeps capability provider mapping when restart preflight validation fails", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-restart-validation-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const online = await manager.online("system:provider-restart-validation-system", {
+      onlineOptions: { method: "local" },
+    });
+    expect(online.ok).toBe(true);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
+
+    const restart = await manager.restart("system:provider-restart-validation-system", {
+      onlineOptions: { method: "remote" },
+    });
+    expect(restart.ok).toBe(false);
+    expect(restart.error).toContain("method remote is not allowed");
+
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
+    const provider = capabilityRegistry.resolve("system.echo.message");
+    await expect(provider.send({ message: "still-routable" })).resolves.toEqual({
+      message: "still-routable",
+    });
+  });
+
   it("continues offlineAll even when one plugin fails", async () => {
     createFakePlugin(tempRoot.skillPath, {
       name: "good",
@@ -637,6 +672,112 @@ describe("pluginsManager", () => {
     expect(capabilitiesManager.listCapabilitiesByPlugin("system:cap-system").map((item) => item.id)).toEqual([
       "system.echo.message",
     ]);
+  });
+
+  it("registers capability provider after plugin online and allows direct send()", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.failed).toHaveLength(0);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
+
+    const provider = capabilityRegistry.resolve("system.echo.message");
+    const result = await provider.send({ message: "hello registry" });
+    expect(result).toEqual({ message: "hello registry" });
+  });
+
+  it("removes capability provider when plugin goes offline", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-offline-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const online = await manager.online("system:provider-offline-system", {
+      onlineOptions: { method: "local" },
+    });
+    expect(online.ok).toBe(true);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
+
+    const offline = await manager.offline("system:provider-offline-system");
+    expect(offline.ok).toBe(true);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+    expect(capabilityRegistry.tryResolve("system.echo.message")).toBeNull();
+  });
+
+  it("clears stale capability mappings when discover rescans and plugin is removed", async () => {
+    const pluginDir = path.join(tempRoot.systemPath, "provider-discover-system");
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-discover-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    manager.discoverPlugins();
+
+    const online = await manager.online("system:provider-discover-system", {
+      onlineOptions: { method: "local" },
+    });
+    expect(online.ok).toBe(true);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
+
+    fs.rmSync(pluginDir, { recursive: true, force: true });
+
+    const summary = manager.discoverPlugins();
+    expect(summary.registered).toBe(0);
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+  });
+
+  it("fails second plugin startup when capability provider is already registered", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-a-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    createFakePlugin(tempRoot.systemPath, {
+      name: "provider-b-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.started).toHaveLength(1);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].reason).toContain("capability already registered");
+    expect(capabilityRegistry.has("system.echo.message")).toBe(true);
   });
 
   it("marks system plugin invalid when capability default id is unknown", () => {

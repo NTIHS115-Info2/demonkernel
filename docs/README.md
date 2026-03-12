@@ -23,6 +23,10 @@
 - [`docs/capabilities/usage.md`](./capabilities/usage.md)
 - [`docs/capabilities/schema.md`](./capabilities/schema.md)
 
+## Registry
+
+- [`docs/registry/overview.md`](./registry/overview.md)
+
 ## UpdateLog
 
 - [`docs/updatelog-spec.md`](./updatelog-spec.md)

@@ -9,6 +9,7 @@ import type {
   StateCode,
 } from "../plugin-sdk";
 import type { CapabilitiesManager } from "../capabilities";
+import type { CapabilityRegistry } from "../registry";
 
 export type PluginKey = `${PluginType}:${string}`;
 export type PluginRef = PluginKey | string;
@@ -27,6 +28,7 @@ export interface PluginsManagerOptions {
   systemPluginsPath?: string;
   logger?: ManagerLogger;
   capabilitiesManager?: CapabilitiesManager;
+  capabilityRegistry?: CapabilityRegistry;
 }
 
 export interface NormalizedDependencies {
