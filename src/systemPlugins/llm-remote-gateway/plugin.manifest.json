@@ -1,0 +1,187 @@
+{
+  "meta": {
+    "name": "llm-remote-gateway",
+    "version": "1.0.0",
+    "description": "Remote-only OpenAI compatible LLM gateway with stream chat/models/health capabilities.",
+    "type": "system",
+    "entry": "index.js"
+  },
+  "runtime": {
+    "startupWeight": 10,
+    "method": ["remote"],
+    "onlineOptions": {
+      "oneOf": [
+        {
+          "when": { "method": "remote" },
+          "schema": {
+            "method": { "type": "string", "enum": ["remote"] },
+            "baseUrl": { "type": "string" },
+            "model": { "type": "string", "optional": true },
+            "timeoutMs": { "type": "number", "optional": true },
+            "connectionTimeoutMs": { "type": "number", "optional": true },
+            "maxRetries": { "type": "number", "optional": true },
+            "retryDelayBaseMs": { "type": "number", "optional": true },
+            "reqId": { "type": "string", "optional": true },
+            "reqIdHeader": { "type": "string", "optional": true },
+            "headers": { "type": "object", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "1000": "未知錯誤 / Unknown error",
+      "1001": "輸入無效 / Invalid input",
+      "1002": "遠端請求失敗 / Remote request failed",
+      "1003": "遠端逾時 / Remote timeout"
+    }
+  },
+  "dependencies": {
+    "system": {},
+    "skill": {}
+  },
+  "io": {
+    "input": {
+      "action": "chat.stream | models.list | health.check",
+      "messages": "array (chat only)"
+    },
+    "output": {
+      "chat.stream": "EventEmitter(data/end/error/abort + abort())",
+      "models.list": "json",
+      "health.check": "json"
+    },
+    "examples": [
+      {
+        "input": {
+          "action": "chat.stream",
+          "messages": [
+            { "role": "user", "content": "hello" }
+          ]
+        },
+        "output": {
+          "type": "EventEmitter"
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "provides": [
+      {
+        "id": "system.llm.remote.chat.stream",
+        "displayName": "LLM Remote Chat Stream",
+        "description": "Stream OpenAI-compatible /v1/chat/completions responses via EventEmitter.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["chat.stream", "system.llm.remote.chat.stream"]
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "model": { "type": "string" },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "tool_choice": {
+              "type": ["string", "object", "null"]
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": ["messages"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "description": "Node.js EventEmitter with data/end/error/abort events and abort() method.",
+          "additionalProperties": true
+        }
+      },
+      {
+        "id": "system.llm.remote.models.list",
+        "displayName": "LLM Remote Models List",
+        "description": "Fetch OpenAI-compatible /v1/models list.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["models.list", "system.llm.remote.models.list"]
+            },
+            "timeoutMs": { "type": "number" }
+          },
+          "required": ["action"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "status": { "type": "number" },
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "raw": {
+              "type": ["object", "array", "string", "number", "boolean", "null"],
+              "additionalProperties": true
+            },
+            "message": { "type": "string" },
+            "errorType": { "type": "string" }
+          },
+          "required": ["ok", "status", "models", "raw"],
+          "additionalProperties": true
+        }
+      },
+      {
+        "id": "system.llm.remote.health.check",
+        "displayName": "LLM Remote Health Check",
+        "description": "Health check for OpenAI-compatible endpoint based on /v1/models.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["health.check", "system.llm.remote.health.check"]
+            },
+            "timeoutMs": { "type": "number" }
+          },
+          "required": ["action"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "status": { "type": "number" },
+            "message": { "type": "string" },
+            "errorType": { "type": "string" },
+            "raw": {
+              "type": ["object", "array", "string", "number", "boolean", "null"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["ok", "status", "message"],
+          "additionalProperties": true
+        }
+      }
+    ]
+  }
+}
