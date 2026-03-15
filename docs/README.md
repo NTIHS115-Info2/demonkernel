@@ -27,6 +27,11 @@
 
 - [`docs/registry/overview.md`](./registry/overview.md)
 
+## Secrets
+
+- [`docs/secrets/overview.md`](./secrets/overview.md)
+- [`docs/secrets/usage.md`](./secrets/usage.md)
+
 ## UpdateLog
 
 - [`docs/updatelog-spec.md`](./updatelog-spec.md)
