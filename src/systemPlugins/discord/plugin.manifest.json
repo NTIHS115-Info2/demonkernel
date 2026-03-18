@@ -1,0 +1,124 @@
+{
+  "meta": {
+    "name": "discord",
+    "version": "0.1.0",
+    "description": "Discord I/O system plugin with inbound conversation stream and outbound message send actions.",
+    "type": "system",
+    "entry": "index.js"
+  },
+  "runtime": {
+    "startupWeight": 65,
+    "method": ["local"],
+    "onlineOptions": {
+      "oneOf": [
+        {
+          "when": { "method": "local" },
+          "schema": {
+            "method": { "type": "string", "enum": ["local"] },
+            "channelId": { "type": "string", "optional": true },
+            "ownerUserId": { "type": "string", "optional": true },
+            "nonOwnerDmReply": { "type": "string", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "1000": "未知錯誤 / Unknown error",
+      "1001": "輸入無效 / Invalid input",
+      "1002": "Discord 請求失敗 / Discord request failed",
+      "1003": "Discord 連線失敗 / Discord connection failed"
+    }
+  },
+  "dependencies": {
+    "system": {},
+    "skill": {}
+  },
+  "io": {
+    "input": {
+      "action": "conversation.stream | message.send",
+      "channelId": "string (message.send required if no default channel)",
+      "message": "string (message.send required)"
+    },
+    "output": {
+      "conversation.stream": "EventEmitter(data/error)",
+      "message.send": "json"
+    },
+    "examples": [
+      {
+        "input": {
+          "action": "conversation.stream"
+        },
+        "output": {
+          "type": "EventEmitter"
+        }
+      },
+      {
+        "input": {
+          "action": "message.send",
+          "channelId": "123456789",
+          "message": "hello from demonkernel"
+        },
+        "output": {
+          "ok": true,
+          "channelId": "123456789",
+          "messageId": "987654321"
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "provides": [
+      {
+        "id": "system.discord.conversation.stream",
+        "displayName": "Discord Conversation Stream",
+        "description": "Stream inbound Discord messages that pass mention/reply/owner-DM filters.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["conversation.stream", "system.discord.conversation.stream"]
+            }
+          },
+          "required": ["action"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "description": "Node.js EventEmitter that emits data/error events.",
+          "additionalProperties": true
+        }
+      },
+      {
+        "id": "system.discord.message.send",
+        "displayName": "Discord Message Send",
+        "description": "Send outbound message to a target Discord channel.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["message.send", "system.discord.message.send"]
+            },
+            "channelId": { "type": "string" },
+            "message": { "type": "string" }
+          },
+          "required": ["action", "message"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "channelId": { "type": "string" },
+            "messageId": { "type": ["string", "null"] }
+          },
+          "required": ["ok", "channelId", "messageId"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}
