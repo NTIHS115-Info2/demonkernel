@@ -16,11 +16,13 @@ import type {
 import { createKernelLogger } from "../../../../core/logger";
 import secretsManager, { SECRET_KEYS } from "../../../../core/secrets";
 
+import { TypingSessionManager } from "./typingSessionManager";
 import type {
   DiscordConversationEvent,
   DiscordConversationSource,
   DiscordConversationStream,
   DiscordMessageSendResult,
+  DiscordTypingControlResult,
 } from "./types";
 
 type LocalOnlineOptions = StrategyOnlineOptions & {
@@ -28,6 +30,7 @@ type LocalOnlineOptions = StrategyOnlineOptions & {
   channelId?: unknown;
   ownerUserId?: unknown;
   nonOwnerDmReply?: unknown;
+  typingIntervalMs?: unknown;
 };
 
 type LocalRuntime = {
@@ -37,6 +40,8 @@ type LocalRuntime = {
   channelId: string | null;
   ownerUserId: string | null;
   nonOwnerDmReply: string;
+  typingIntervalMs: number;
+  typingSessionManager: TypingSessionManager | null;
 };
 
 const METHOD_LOCAL = "local" as const;
@@ -44,7 +49,13 @@ const ACTION_CONVERSATION_STREAM = "conversation.stream";
 const ACTION_CONVERSATION_STREAM_CAPABILITY = "system.discord.conversation.stream";
 const ACTION_MESSAGE_SEND = "message.send";
 const ACTION_MESSAGE_SEND_CAPABILITY = "system.discord.message.send";
+const ACTION_TYPING_START = "typing.start";
+const ACTION_TYPING_START_CAPABILITY = "system.discord.typing.start";
+const ACTION_TYPING_STOP = "typing.stop";
+const ACTION_TYPING_STOP_CAPABILITY = "system.discord.typing.stop";
+
 const DEFAULT_NON_OWNER_DM_REPLY = "我還學不會跟別人說話";
+const DEFAULT_TYPING_INTERVAL_MS = 9000;
 
 const logger = createKernelLogger("plugin-discord-local", {
   plugin: "discord",
@@ -62,6 +73,8 @@ let runtime: LocalRuntime = {
   channelId: null,
   ownerUserId: null,
   nonOwnerDmReply: DEFAULT_NON_OWNER_DM_REPLY,
+  typingIntervalMs: DEFAULT_TYPING_INTERVAL_MS,
+  typingSessionManager: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,6 +88,15 @@ function normalizeOptionalString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
 }
 
 function normalizeChannelId(value: unknown): string | null {
@@ -106,6 +128,10 @@ function resolveChannelId(options: LocalOnlineOptions): string | null {
 function resolveNonOwnerDmReply(options: LocalOnlineOptions): string {
   const fromOptions = normalizeOptionalString(options.nonOwnerDmReply);
   return fromOptions ?? DEFAULT_NON_OWNER_DM_REPLY;
+}
+
+function resolveTypingIntervalMs(options: LocalOnlineOptions): number {
+  return normalizePositiveNumber(options.typingIntervalMs, DEFAULT_TYPING_INTERVAL_MS);
 }
 
 function isDirectMessage(message: Message): boolean {
@@ -182,6 +208,14 @@ function getRuntimeClient(): Client {
   }
 
   return runtime.client;
+}
+
+function getTypingManager(): TypingSessionManager {
+  if (!runtime.typingSessionManager) {
+    throw new Error("discord typing session manager is not ready");
+  }
+
+  return runtime.typingSessionManager;
 }
 
 async function handleInboundMessage(message: Message): Promise<void> {
@@ -285,7 +319,12 @@ async function sendMessage(options: SendOptions): Promise<DiscordMessageSendResu
     throw new Error(`discord channel does not support send(): ${channelId}`);
   }
 
-  const sent = await (sendMethod as (content: string) => Promise<{ id?: unknown }>)(message);
+  // 中英註解：保留 channel 作為 this，避免 discord.js 方法脫綁後讀不到 this.client。
+  // EN: Keep `channel` as method receiver to avoid losing `this.client` in discord.js internals.
+  const sent = await (sendMethod as (this: unknown, content: string) => Promise<{ id?: unknown }>).call(
+    channel,
+    message
+  );
   return {
     ok: true,
     channelId,
@@ -293,9 +332,24 @@ async function sendMessage(options: SendOptions): Promise<DiscordMessageSendResu
   };
 }
 
+async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): Promise<DiscordTypingControlResult> {
+  const payload = isRecord(options) ? options : {};
+  const channelId = normalizeChannelId(payload.channelId) ?? runtime.channelId;
+  if (!channelId) {
+    throw new Error(`${mode === "start" ? ACTION_TYPING_START : ACTION_TYPING_STOP} requires channelId or online channelId default`);
+  }
+
+  const manager = getTypingManager();
+  if (mode === "start") {
+    return manager.start(channelId);
+  }
+
+  return manager.stop(channelId);
+}
+
 function assertLocalMethod(method: unknown, operation: string): void {
   if (method !== METHOD_LOCAL) {
-    throw new Error(`${operation} requires method="local"`);
+    throw new Error(`${operation} requires method=\"local\"`);
   }
 }
 
@@ -315,6 +369,7 @@ export default {
     const ownerUserId = resolveOwnerUserId(typedOptions);
     const channelId = resolveChannelId(typedOptions);
     const nonOwnerDmReply = resolveNonOwnerDmReply(typedOptions);
+    const typingIntervalMs = resolveTypingIntervalMs(typedOptions);
 
     const client = new Client({
       intents: [
@@ -330,6 +385,14 @@ export default {
       await handleInboundMessage(message);
     };
 
+    const typingSessionManager = new TypingSessionManager({
+      intervalMs: typingIntervalMs,
+      fetchChannel: async (targetChannelId: string) => {
+        const runtimeClient = getRuntimeClient();
+        return runtimeClient.channels.fetch(targetChannelId);
+      },
+    });
+
     try {
       await client.login(token);
       client.on("messageCreate", messageListener);
@@ -341,13 +404,17 @@ export default {
         channelId,
         ownerUserId,
         nonOwnerDmReply,
+        typingIntervalMs,
+        typingSessionManager,
       };
 
       logger.info("discord plugin online", {
         channelId: channelId ?? "global",
         ownerUserId: ownerUserId ?? "unset",
+        typingIntervalMs,
       });
     } catch (error) {
+      await typingSessionManager.clear();
       try {
         await client.destroy();
       } catch {
@@ -361,12 +428,18 @@ export default {
   async offline(): Promise<void> {
     const client = runtime.client;
     const messageListener = runtime.messageListener;
+    const typingSessionManager = runtime.typingSessionManager;
+
+    if (typingSessionManager) {
+      await typingSessionManager.clear();
+    }
 
     if (!client) {
       runtime = {
         ...runtime,
         online: false,
         messageListener: null,
+        typingSessionManager: null,
       };
       return;
     }
@@ -384,6 +457,8 @@ export default {
       channelId: null,
       ownerUserId: null,
       nonOwnerDmReply: DEFAULT_NON_OWNER_DM_REPLY,
+      typingIntervalMs: DEFAULT_TYPING_INTERVAL_MS,
+      typingSessionManager: null,
     };
 
     logger.info("discord plugin offline");
@@ -417,6 +492,14 @@ export default {
 
     if (action === ACTION_MESSAGE_SEND || action === ACTION_MESSAGE_SEND_CAPABILITY) {
       return sendMessage(options);
+    }
+
+    if (action === ACTION_TYPING_START || action === ACTION_TYPING_START_CAPABILITY) {
+      return sendTypingControl(options, "start");
+    }
+
+    if (action === ACTION_TYPING_STOP || action === ACTION_TYPING_STOP_CAPABILITY) {
+      return sendTypingControl(options, "stop");
     }
 
     throw new Error(`unsupported action: ${action}`);

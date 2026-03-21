@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import secretsManager, { SECRET_KEYS } from "../../src/core/secrets";
 import plugin from "../../src/systemPlugins/discord/index";
-import type { DiscordConversationStream } from "../../src/systemPlugins/discord/strategies/local/types";
+import type {
+  DiscordConversationStream,
+  DiscordTypingControlResult,
+} from "../../src/systemPlugins/discord/strategies/local/types";
 
 const discordMock = vi.hoisted(() => {
   const { EventEmitter } = require("node:events") as typeof import("node:events");
@@ -364,6 +367,154 @@ describe("system plugin: discord", () => {
     })).rejects.toThrow("not online");
   });
 
+  it("keeps channel send() this binding for discord.js channel methods", async () => {
+    mockSecrets();
+    const pluginModule = getPlugin();
+    await pluginModule.online({ method: "local", channelId: "binding-channel" });
+
+    const client = getLatestClient();
+    const channelLike = {
+      client: { id: "mock-client" },
+      id: "binding-channel",
+      send(this: { client?: unknown }, _content: string) {
+        if (!this.client) {
+          throw new Error("missing this.client");
+        }
+        return Promise.resolve({ id: "bound-sent-id" });
+      },
+    };
+    client.channels.fetch.mockResolvedValue(channelLike);
+
+    const result = await pluginModule.send({
+      action: "message.send",
+      message: "binding test",
+    }) as { ok: boolean; channelId: string; messageId: string | null };
+
+    expect(result).toEqual({
+      ok: true,
+      channelId: "binding-channel",
+      messageId: "bound-sent-id",
+    });
+  });
+
+  it("supports typing.start/typing.stop with reference count and heartbeat", async () => {
+    vi.useFakeTimers();
+    mockSecrets();
+    const pluginModule = getPlugin();
+    await pluginModule.online({
+      method: "local",
+      channelId: "typing-default-channel",
+      typingIntervalMs: 20,
+    });
+
+    const sendTyping = vi.fn(async () => undefined);
+    const client = getLatestClient();
+    client.channels.fetch.mockResolvedValue({
+      sendTyping,
+    });
+
+    const startA = await pluginModule.send({
+      action: "typing.start",
+    }) as DiscordTypingControlResult;
+    expect(startA).toEqual({
+      ok: true,
+      channelId: "typing-default-channel",
+      active: true,
+      refCount: 1,
+    });
+
+    const startB = await pluginModule.send({
+      action: "system.discord.typing.start",
+    }) as DiscordTypingControlResult;
+    expect(startB).toEqual({
+      ok: true,
+      channelId: "typing-default-channel",
+      active: true,
+      refCount: 2,
+    });
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(sendTyping).toHaveBeenCalled();
+    const callCountWithHeartbeat = sendTyping.mock.calls.length;
+    expect(callCountWithHeartbeat).toBeGreaterThanOrEqual(2);
+
+    const stopA = await pluginModule.send({
+      action: "typing.stop",
+    }) as DiscordTypingControlResult;
+    expect(stopA).toEqual({
+      ok: true,
+      channelId: "typing-default-channel",
+      active: true,
+      refCount: 1,
+    });
+
+    const stopB = await pluginModule.send({
+      action: "system.discord.typing.stop",
+    }) as DiscordTypingControlResult;
+    expect(stopB).toEqual({
+      ok: true,
+      channelId: "typing-default-channel",
+      active: false,
+      refCount: 0,
+    });
+
+    const callsBeforeWait = sendTyping.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60);
+    expect(sendTyping.mock.calls.length).toBe(callsBeforeWait);
+
+    await pluginModule.offline();
+    vi.useRealTimers();
+  });
+
+  it("stops typing sessions on offline", async () => {
+    vi.useFakeTimers();
+    mockSecrets();
+    const pluginModule = getPlugin();
+    await pluginModule.online({
+      method: "local",
+      channelId: "typing-default-channel",
+      typingIntervalMs: 20,
+    });
+
+    const sendTyping = vi.fn(async () => undefined);
+    const client = getLatestClient();
+    client.channels.fetch.mockResolvedValue({
+      sendTyping,
+    });
+
+    await pluginModule.send({
+      action: "typing.start",
+    });
+
+    await vi.advanceTimersByTimeAsync(40);
+    const callsBeforeOffline = sendTyping.mock.calls.length;
+
+    await pluginModule.offline();
+    await vi.advanceTimersByTimeAsync(60);
+    expect(sendTyping.mock.calls.length).toBe(callsBeforeOffline);
+    vi.useRealTimers();
+  });
+
+  it("requires channelId for typing actions when no default channel exists", async () => {
+    mockSecrets({
+      [SECRET_KEYS.DISCORD_CHANNEL_ID]: null,
+      DISCORD_CHANNEL_ID: null,
+    });
+    const pluginModule = getPlugin();
+    await pluginModule.online({
+      method: "local",
+      channelId: "global",
+    });
+
+    await expect(pluginModule.send({
+      action: "typing.start",
+    })).rejects.toThrow("requires channelId");
+
+    await expect(pluginModule.send({
+      action: "typing.stop",
+    })).rejects.toThrow("requires channelId");
+  });
+
   it("supports capability action aliases and rejects unknown action", async () => {
     mockSecrets();
     const pluginModule = getPlugin();
@@ -373,6 +524,17 @@ describe("system plugin: discord", () => {
       action: "system.discord.conversation.stream",
     }) as DiscordConversationStream;
     expect(typeof stream.on).toBe("function");
+
+    const client = getLatestClient();
+    client.channels.fetch.mockResolvedValue({
+      sendTyping: vi.fn(async () => undefined),
+    });
+
+    const typing = await pluginModule.send({
+      action: "system.discord.typing.start",
+      channelId: "alias-channel",
+    }) as DiscordTypingControlResult;
+    expect(typing.active).toBe(true);
 
     await expect(pluginModule.send({
       action: "unknown.action",

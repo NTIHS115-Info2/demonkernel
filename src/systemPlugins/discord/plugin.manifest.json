@@ -1,8 +1,8 @@
 {
   "meta": {
     "name": "discord",
-    "version": "0.1.0",
-    "description": "Discord I/O system plugin with inbound conversation stream and outbound message send actions.",
+    "version": "0.2.0",
+    "description": "Discord I/O system plugin with inbound conversation stream, outbound message send, and typing control actions.",
     "type": "system",
     "entry": "index.js"
   },
@@ -17,7 +17,8 @@
             "method": { "type": "string", "enum": ["local"] },
             "channelId": { "type": "string", "optional": true },
             "ownerUserId": { "type": "string", "optional": true },
-            "nonOwnerDmReply": { "type": "string", "optional": true }
+            "nonOwnerDmReply": { "type": "string", "optional": true },
+            "typingIntervalMs": { "type": "number", "optional": true }
           }
         }
       ]
@@ -35,13 +36,15 @@
   },
   "io": {
     "input": {
-      "action": "conversation.stream | message.send",
-      "channelId": "string (message.send required if no default channel)",
+      "action": "conversation.stream | message.send | typing.start | typing.stop",
+      "channelId": "string (message.send/typing required if no default channel)",
       "message": "string (message.send required)"
     },
     "output": {
       "conversation.stream": "EventEmitter(data/error)",
-      "message.send": "json"
+      "message.send": "json",
+      "typing.start": "json",
+      "typing.stop": "json"
     },
     "examples": [
       {
@@ -62,6 +65,18 @@
           "ok": true,
           "channelId": "123456789",
           "messageId": "987654321"
+        }
+      },
+      {
+        "input": {
+          "action": "typing.start",
+          "channelId": "123456789"
+        },
+        "output": {
+          "ok": true,
+          "channelId": "123456789",
+          "active": true,
+          "refCount": 1
         }
       }
     ]
@@ -116,6 +131,64 @@
             "messageId": { "type": ["string", "null"] }
           },
           "required": ["ok", "channelId", "messageId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "system.discord.typing.start",
+        "displayName": "Discord Typing Start",
+        "description": "Start or retain a typing session on a Discord channel.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["typing.start", "system.discord.typing.start"]
+            },
+            "channelId": { "type": "string" }
+          },
+          "required": ["action"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "channelId": { "type": "string" },
+            "active": { "type": "boolean" },
+            "refCount": { "type": "number" }
+          },
+          "required": ["ok", "channelId", "active", "refCount"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "system.discord.typing.stop",
+        "displayName": "Discord Typing Stop",
+        "description": "Release one typing session reference on a Discord channel.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["typing.stop", "system.discord.typing.stop"]
+            },
+            "channelId": { "type": "string" }
+          },
+          "required": ["action"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "ok": { "type": "boolean" },
+            "channelId": { "type": "string" },
+            "active": { "type": "boolean" },
+            "refCount": { "type": "number" }
+          },
+          "required": ["ok", "channelId", "active", "refCount"],
           "additionalProperties": false
         }
       }

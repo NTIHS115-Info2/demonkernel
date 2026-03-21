@@ -87,6 +87,24 @@ module.exports = {
       };
     }
 
+    if (action === "typing.start" || action === "system.discord.typing.start") {
+      return {
+        ok: true,
+        channelId: payload?.channelId ?? "fixture-channel",
+        active: true,
+        refCount: 1
+      };
+    }
+
+    if (action === "typing.stop" || action === "system.discord.typing.stop") {
+      return {
+        ok: true,
+        channelId: payload?.channelId ?? "fixture-channel",
+        active: false,
+        refCount: 0
+      };
+    }
+
     throw new Error("unsupported action");
   }
 };
@@ -137,6 +155,8 @@ describe("pluginsManager integration: discord capabilities", () => {
     ).toEqual([
       "system.discord.conversation.stream",
       "system.discord.message.send",
+      "system.discord.typing.start",
+      "system.discord.typing.stop",
     ]);
 
     const onlineResult = await manager.online("system:discord", {
@@ -148,6 +168,8 @@ describe("pluginsManager integration: discord capabilities", () => {
 
     const streamProvider = capabilityRegistry.resolve("system.discord.conversation.stream");
     const sendProvider = capabilityRegistry.resolve("system.discord.message.send");
+    const typingStartProvider = capabilityRegistry.resolve("system.discord.typing.start");
+    const typingStopProvider = capabilityRegistry.resolve("system.discord.typing.stop");
 
     const streamResult = await streamProvider.send({
       action: "system.discord.conversation.stream",
@@ -163,6 +185,28 @@ describe("pluginsManager integration: discord capabilities", () => {
       ok: true,
       channelId: "target-channel",
       messageId: "fixture-message-id",
+    });
+
+    const typingStartResult = await typingStartProvider.send({
+      action: "system.discord.typing.start",
+      channelId: "target-channel",
+    }) as { ok: boolean; channelId: string; active: boolean; refCount: number };
+    expect(typingStartResult).toEqual({
+      ok: true,
+      channelId: "target-channel",
+      active: true,
+      refCount: 1,
+    });
+
+    const typingStopResult = await typingStopProvider.send({
+      action: "system.discord.typing.stop",
+      channelId: "target-channel",
+    }) as { ok: boolean; channelId: string; active: boolean; refCount: number };
+    expect(typingStopResult).toEqual({
+      ok: true,
+      channelId: "target-channel",
+      active: false,
+      refCount: 0,
     });
   });
 });

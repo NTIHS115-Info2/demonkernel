@@ -5,17 +5,50 @@ import type { OnlineMethod, OnlineOptions } from "./core/plugin-sdk";
 type CliArgs = {
   plugin?: string;
   options: OnlineOptions;
+  llmBaseUrl: string | null;
+  llmModel: string | null;
+  talkRelayEnabled: boolean;
+  talkRelayErrorReply: string | null;
 };
 
 const startupLogger = createKernelLogger("kernel-startup", {
   component: "entrypoint",
 });
 
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseBooleanValue(value: unknown, fieldName: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+
+  throw new Error(`${fieldName} must be boolean-like (true/false/1/0/yes/no)`);
+}
+
 function parseCliArgs(argv: string[]): CliArgs {
   const options: Record<string, unknown> = {
     method: "local",
   };
   let plugin: string | undefined;
+  let llmBaseUrlFromCli: string | null = null;
+  let llmModelFromCli: string | null = null;
+  let talkRelayEnabledFromCli: boolean | null = null;
+  let talkRelayErrorReplyFromCli: string | null = null;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -35,6 +68,37 @@ function parseCliArgs(argv: string[]): CliArgs {
 
     if (arg === "--url" && next) {
       options.url = next;
+      options.baseUrl = next;
+      llmBaseUrlFromCli = normalizeOptionalString(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--llm-base-url" && next) {
+      options.baseUrl = next;
+      llmBaseUrlFromCli = normalizeOptionalString(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--llm-model" && next) {
+      options.model = next;
+      llmModelFromCli = normalizeOptionalString(next);
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--talk-relay-enabled" && next) {
+      const parsed = parseBooleanValue(next, "--talk-relay-enabled");
+      options.relayEnabled = parsed;
+      talkRelayEnabledFromCli = parsed;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--talk-relay-error-reply" && next) {
+      options.relayErrorReply = next;
+      talkRelayErrorReplyFromCli = normalizeOptionalString(next);
       i += 1;
       continue;
     }
@@ -52,34 +116,38 @@ function parseCliArgs(argv: string[]): CliArgs {
     }
   }
 
+  const llmBaseUrl = llmBaseUrlFromCli ?? normalizeOptionalString(process.env.LLM_REMOTE_BASE_URL);
+  const llmModel = llmModelFromCli ?? normalizeOptionalString(process.env.LLM_REMOTE_MODEL);
+  const talkRelayEnabled = talkRelayEnabledFromCli
+    ?? parseBooleanValue(process.env.TALK_RELAY_ENABLED ?? "true", "TALK_RELAY_ENABLED");
+  const talkRelayErrorReply = talkRelayErrorReplyFromCli
+    ?? normalizeOptionalString(process.env.TALK_RELAY_ERROR_REPLY);
+
+  if (llmModel) {
+    options.model = llmModel;
+  }
+  options.relayEnabled = talkRelayEnabled;
+  if (talkRelayErrorReply) {
+    options.relayErrorReply = talkRelayErrorReply;
+  }
+
   return {
     plugin,
     options: {
       ...options,
       method: (options.method as OnlineMethod) ?? "local",
     } as OnlineOptions,
+    llmBaseUrl,
+    llmModel,
+    talkRelayEnabled,
+    talkRelayErrorReply,
   };
 }
 
-function printStartupReport(report: ReturnType<typeof pluginsManager.getStartupReport>): void {
-  if (report.started.length > 0) {
-    startupLogger.info(`[start] started plugins: ${report.started.join(", ")}`);
-  }
-
-  if (report.skipped.length > 0) {
-    startupLogger.info(`[start] skipped plugins: ${report.skipped.join(", ")}`);
-  }
-
-  for (const failure of report.failed) {
-    startupLogger.error(`[start] failed ${failure.key}: ${failure.reason}`);
-  }
-
-  for (const blocked of report.blocked) {
-    startupLogger.error(`[start] blocked ${blocked.key}: ${blocked.reason}`);
-  }
-
-  for (const cycle of report.cycles) {
-    startupLogger.error(`[start] cycle detected: ${cycle.join(" -> ")}`);
+async function onlineRequiredPlugin(ref: string, onlineOptions: OnlineOptions): Promise<void> {
+  const result = await pluginsManager.online(ref, { onlineOptions });
+  if (!result.ok) {
+    throw new Error(`online failed for ${result.key}: ${result.error ?? "unknown error"}`);
   }
 }
 
@@ -99,27 +167,50 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
   }
 
   if (cli.plugin) {
-    const result = await pluginsManager.online(cli.plugin, {
-      onlineOptions: cli.options,
-    });
-
-    if (!result.ok) {
-      throw new Error(`online failed for ${result.key}: ${result.error ?? "unknown error"}`);
-    }
-
-    startupLogger.info(`[start] plugin online ok: ${result.key}`);
+    await onlineRequiredPlugin(cli.plugin, cli.options);
+    startupLogger.info(`[start] plugin online ok: ${cli.plugin}`);
   } else {
-    const report = await pluginsManager.onlineAll({
-      defaultOnlineOptions: cli.options,
-    });
-
-    printStartupReport(report);
-
-    if (report.failed.length > 0 || report.blocked.length > 0) {
-      throw new Error("some plugins failed or were blocked during startup");
+    if (!cli.llmBaseUrl) {
+      throw new Error(
+        "LLM remote baseUrl is required for core startup. Use --llm-base-url or LLM_REMOTE_BASE_URL."
+      );
     }
 
-    startupLogger.info("[start] all plugins online");
+    const startedPlugins: string[] = [];
+
+    try {
+      const llmOptions: OnlineOptions = {
+        method: "remote",
+        baseUrl: cli.llmBaseUrl,
+      };
+      if (cli.llmModel) {
+        llmOptions.model = cli.llmModel;
+      }
+
+      await onlineRequiredPlugin("system:llm-remote-gateway", llmOptions);
+      startedPlugins.push("system:llm-remote-gateway");
+
+      await onlineRequiredPlugin("system:discord", { method: "local" });
+      startedPlugins.push("system:discord");
+
+      const talkEngineOptions: OnlineOptions = {
+        method: "local",
+        relayEnabled: cli.talkRelayEnabled,
+      };
+      if (cli.talkRelayErrorReply) {
+        talkEngineOptions.relayErrorReply = cli.talkRelayErrorReply;
+      }
+
+      await onlineRequiredPlugin("system:talk-engine", talkEngineOptions);
+      startedPlugins.push("system:talk-engine");
+    } catch (error) {
+      if (startedPlugins.length > 0) {
+        await pluginsManager.offlineAll();
+      }
+      throw error;
+    }
+
+    startupLogger.info(`[start] core flow online: ${startedPlugins.join(", ")}`);
   }
 
   let shuttingDown = false;

@@ -1,0 +1,127 @@
+{
+  "meta": {
+    "name": "talk-engine",
+    "version": "0.1.0",
+    "description": "Core conversation engine that composes LLM gateway and Discord capabilities.",
+    "type": "system",
+    "entry": "index.js"
+  },
+  "runtime": {
+    "startupWeight": 30,
+    "method": ["local"],
+    "onlineOptions": {
+      "oneOf": [
+        {
+          "when": { "method": "local" },
+          "schema": {
+            "method": { "type": "string", "enum": ["local"] },
+            "relayEnabled": { "type": "boolean", "optional": true },
+            "relayErrorReply": { "type": "string", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "1000": "未知錯誤 / Unknown error",
+      "1001": "輸入無效 / Invalid input",
+      "1002": "LLM 請求失敗 / LLM request failed",
+      "1003": "Relay 執行失敗 / Relay processing failed"
+    }
+  },
+  "dependencies": {
+    "system": {
+      "llm-remote-gateway": "1.0.0",
+      "discord": "0.2.0"
+    },
+    "skill": {}
+  },
+  "io": {
+    "input": {
+      "action": "talk.nostream | talk.stream",
+      "message": "string",
+      "talker": "string (optional)"
+    },
+    "output": {
+      "talk.nostream": "{ reply: string }",
+      "talk.stream": "EventEmitter(data/end/error/abort)"
+    },
+    "examples": [
+      {
+        "input": {
+          "action": "talk.nostream",
+          "message": "hello",
+          "talker": "user-1"
+        },
+        "output": {
+          "reply": "hello world"
+        }
+      }
+    ]
+  },
+  "capabilities": {
+    "provides": [
+      {
+        "id": "system.talk.engine.nostream",
+        "displayName": "Talk Engine No Stream",
+        "description": "Generate full text reply with single request-response call.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["talk.nostream", "system.talk.engine.nostream"]
+            },
+            "message": { "type": "string" },
+            "talker": { "type": "string" },
+            "model": { "type": "string" },
+            "params": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": ["message"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "reply": { "type": "string" }
+          },
+          "required": ["reply"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "id": "system.talk.engine.stream",
+        "displayName": "Talk Engine Stream",
+        "description": "Forward LLM stream emitter for caller-managed streaming.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["talk.stream", "system.talk.engine.stream"]
+            },
+            "message": { "type": "string" },
+            "talker": { "type": "string" },
+            "model": { "type": "string" },
+            "params": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": ["message"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "description": "Node.js EventEmitter that proxies llm-remote-gateway stream events.",
+          "additionalProperties": true
+        }
+      }
+    ]
+  }
+}
+

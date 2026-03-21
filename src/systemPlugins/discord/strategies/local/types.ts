@@ -28,3 +28,10 @@ export interface DiscordMessageSendResult {
   channelId: string;
   messageId: string | null;
 }
+
+export interface DiscordTypingControlResult {
+  ok: boolean;
+  channelId: string;
+  active: boolean;
+  refCount: number;
+}
