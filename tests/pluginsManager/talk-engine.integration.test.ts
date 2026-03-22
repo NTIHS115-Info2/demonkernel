@@ -35,7 +35,7 @@ function writeLlmFixturePlugin(basePath: string): void {
   writeJson(path.join(pluginDir, "plugin.manifest.json"), {
     meta: {
       name: "llm-remote-gateway",
-      version: "1.0.0",
+      version: "1.1.0",
       type: "system",
       entry: "index.js",
     },
@@ -88,7 +88,7 @@ module.exports = {
   async offline() { online = false; },
   async restart(options) { await this.offline(); await this.online(options); },
   async state() { return { status: online ? 1 : 0 }; },
-  async send(payload) {
+  async streamChat(payload) {
     const emitter = new EventEmitter();
     emitter.abort = () => emitter.emit("abort");
     setTimeout(() => {
@@ -97,6 +97,19 @@ module.exports = {
       emitter.emit("end");
     }, 0);
     return emitter;
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.llm.remote.chat.stream",
+        createProvider(pluginInstance) {
+          return { streamChat: pluginInstance.streamChat.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
+  async send(payload) {
+    return this.streamChat(payload);
   }
 };
 `;
@@ -111,7 +124,7 @@ function writeDiscordFixturePlugin(basePath: string): void {
   writeJson(path.join(pluginDir, "plugin.manifest.json"), {
     meta: {
       name: "discord",
-      version: "0.2.0",
+      version: "0.3.0",
       type: "system",
       entry: "index.js",
     },
@@ -213,19 +226,59 @@ module.exports = {
   async offline() { online = false; },
   async restart(options) { await this.offline(); await this.online(options); },
   async state() { return { status: online ? 1 : 0 }; },
+  async openConversationStream() {
+    return conversation;
+  },
+  async sendMessage(payload) {
+    return { ok: true, channelId: payload?.channelId || "fixture-channel", messageId: "fixture-message" };
+  },
+  async startTyping(payload) {
+    return { ok: true, channelId: payload?.channelId || "fixture-channel", active: true, refCount: 1 };
+  },
+  async stopTyping(payload) {
+    return { ok: true, channelId: payload?.channelId || "fixture-channel", active: false, refCount: 0 };
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.discord.conversation.stream",
+        createProvider(pluginInstance) {
+          return { openConversationStream: pluginInstance.openConversationStream.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.message.send",
+        createProvider(pluginInstance) {
+          return { sendMessage: pluginInstance.sendMessage.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.typing.start",
+        createProvider(pluginInstance) {
+          return { startTyping: pluginInstance.startTyping.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.typing.stop",
+        createProvider(pluginInstance) {
+          return { stopTyping: pluginInstance.stopTyping.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
   async send(payload) {
     const action = payload?.action;
     if (action === "system.discord.conversation.stream" || action === "conversation.stream") {
-      return conversation;
+      return this.openConversationStream();
     }
     if (action === "system.discord.message.send" || action === "message.send") {
-      return { ok: true, channelId: payload?.channelId || "fixture-channel", messageId: "fixture-message" };
+      return this.sendMessage(payload);
     }
     if (action === "system.discord.typing.start" || action === "typing.start") {
-      return { ok: true, channelId: payload?.channelId || "fixture-channel", active: true, refCount: 1 };
+      return this.startTyping(payload);
     }
     if (action === "system.discord.typing.stop" || action === "typing.stop") {
-      return { ok: true, channelId: payload?.channelId || "fixture-channel", active: false, refCount: 0 };
+      return this.stopTyping(payload);
     }
     throw new Error("unsupported action");
   }
@@ -259,19 +312,41 @@ module.exports = {
   async offline() { online = false; },
   async restart(options) { await this.offline(); await this.online(options); },
   async state() { return { status: online ? 1 : 0 }; },
+  async generateReply(payload) {
+    return { reply: "fixture:" + (payload?.message || "") };
+  },
+  async streamReply() {
+    const emitter = new EventEmitter();
+    emitter.abort = () => emitter.emit("abort");
+    setTimeout(() => {
+      emitter.emit("data", "fixture-stream");
+      emitter.emit("end");
+    }, 0);
+    return emitter;
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.talk.engine.nostream",
+        createProvider(pluginInstance) {
+          return { generateReply: pluginInstance.generateReply.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.talk.engine.stream",
+        createProvider(pluginInstance) {
+          return { streamReply: pluginInstance.streamReply.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
   async send(payload) {
     const action = payload?.action;
     if (action === "talk.nostream" || action === "system.talk.engine.nostream") {
-      return { reply: "fixture:" + (payload?.message || "") };
+      return this.generateReply(payload);
     }
     if (action === "talk.stream" || action === "system.talk.engine.stream") {
-      const emitter = new EventEmitter();
-      emitter.abort = () => emitter.emit("abort");
-      setTimeout(() => {
-        emitter.emit("data", "fixture-stream");
-        emitter.emit("end");
-      }, 0);
-      return emitter;
+      return this.streamReply(payload);
     }
     throw new Error("unsupported action");
   }
@@ -334,18 +409,21 @@ describe("pluginsManager integration: talk-engine capabilities", () => {
     const noStreamProvider = capabilityRegistry.resolve("system.talk.engine.nostream");
     const streamProvider = capabilityRegistry.resolve("system.talk.engine.stream");
 
-    const noStreamResult = await noStreamProvider.send({
-      action: "system.talk.engine.nostream",
+    const noStreamResult = await (
+      noStreamProvider as { generateReply: (input: { message: string }) => Promise<{ reply: string }> }
+    ).generateReply({
       message: "hello",
-    }) as { reply: string };
+    });
     expect(noStreamResult).toEqual({ reply: "fixture:hello" });
 
-    const streamResult = await streamProvider.send({
-      action: "system.talk.engine.stream",
+    const streamResult = await (
+      streamProvider as {
+        streamReply: (input: { message: string }) => Promise<EventEmitter & { abort?: () => void }>;
+      }
+    ).streamReply({
       message: "hello",
-    }) as EventEmitter & { abort?: () => void };
+    });
     expect(typeof streamResult.on).toBe("function");
     expect(typeof streamResult.abort).toBe("function");
   });
 });
-

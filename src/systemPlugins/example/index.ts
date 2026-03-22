@@ -1,4 +1,5 @@
 import type {
+  CapabilityBinding,
   OnlineOptions,
   RestartOptions,
   SendOptions,
@@ -8,6 +9,24 @@ import type {
 import strategies from "./strategies";
 
 let mode: "local" | "remote" = "local";
+
+type ExampleProviderHost = {
+  echoMessage(input: SendOptions): Promise<unknown>;
+};
+
+function createCapabilityBindings(): CapabilityBinding[] {
+  return [
+    {
+      capabilityId: "system.echo.message",
+      createProvider(pluginInstance: unknown) {
+        const plugin = pluginInstance as ExampleProviderHost;
+        return {
+          echoMessage: plugin.echoMessage.bind(plugin),
+        };
+      },
+    },
+  ];
+}
 
 export = {
   async online(options: OnlineOptions): Promise<void> {
@@ -36,7 +55,15 @@ export = {
     return strategies[mode].state();
   },
 
+  async echoMessage(options: SendOptions): Promise<unknown> {
+    return strategies[mode].echoMessage(options);
+  },
+
   async send(options: SendOptions): Promise<unknown> {
     return strategies[mode].send(options);
+  },
+
+  getCapabilityBindings(): CapabilityBinding[] {
+    return createCapabilityBindings();
   },
 };

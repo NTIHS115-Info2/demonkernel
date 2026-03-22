@@ -78,6 +78,26 @@ export interface TalkNoStreamResult {
   reply: string;
 }
 
+export interface LlmChatStreamProvider {
+  streamChat(input: Record<string, unknown>): Promise<LlmStreamEmitter>;
+}
+
+export interface DiscordConversationProvider {
+  openConversationStream(): Promise<DiscordConversationStream>;
+}
+
+export interface DiscordMessageSendProvider {
+  sendMessage(input: { channelId?: unknown; message?: unknown }): Promise<unknown>;
+}
+
+export interface DiscordTypingStartProvider {
+  startTyping(input: { channelId?: unknown }): Promise<unknown>;
+}
+
+export interface DiscordTypingStopProvider {
+  stopTyping(input: { channelId?: unknown }): Promise<unknown>;
+}
+
 export interface RelayRuntime {
   enabled: boolean;
   errorReply: string;
@@ -85,4 +105,3 @@ export interface RelayRuntime {
   dataListener: ((event: DiscordConversationEvent) => void) | null;
   errorListener: ((error: unknown) => void) | null;
 }
-

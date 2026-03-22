@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "llm-remote-gateway",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Remote-only OpenAI compatible LLM gateway with stream chat/models/health capabilities.",
     "type": "system",
     "entry": "index.js"
@@ -69,14 +69,10 @@
         "id": "system.llm.remote.chat.stream",
         "displayName": "LLM Remote Chat Stream",
         "description": "Stream OpenAI-compatible /v1/chat/completions responses via EventEmitter.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["chat.stream", "system.llm.remote.chat.stream"]
-            },
             "messages": {
               "type": "array",
               "items": {
@@ -113,17 +109,13 @@
         "id": "system.llm.remote.models.list",
         "displayName": "LLM Remote Models List",
         "description": "Fetch OpenAI-compatible /v1/models list.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["models.list", "system.llm.remote.models.list"]
-            },
             "timeoutMs": { "type": "number" }
           },
-          "required": ["action"],
+          "required": [],
           "additionalProperties": true
         },
         "output": {
@@ -153,17 +145,13 @@
         "id": "system.llm.remote.health.check",
         "displayName": "LLM Remote Health Check",
         "description": "Health check for OpenAI-compatible endpoint based on /v1/models.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["health.check", "system.llm.remote.health.check"]
-            },
             "timeoutMs": { "type": "number" }
           },
-          "required": ["action"],
+          "required": [],
           "additionalProperties": true
         },
         "output": {

@@ -9,7 +9,7 @@ const CAPABILITY_DISCORD_TYPING_START = "system.discord.typing.start";
 const CAPABILITY_DISCORD_TYPING_STOP = "system.discord.typing.stop";
 
 const registryMock = vi.hoisted(() => {
-  const providers = new Map<string, { send: ReturnType<typeof vi.fn> }>();
+  const providers = new Map<string, Record<string, unknown>>();
 
   return {
     resolve: vi.fn((capabilityId: string) => {
@@ -17,24 +17,25 @@ const registryMock = vi.hoisted(() => {
       if (!provider) {
         throw new Error(`capability provider not registered: ${capabilityId}`);
       }
-
-      return {
-        send: provider.send,
-      };
+      return provider;
     }),
 
-    setProvider(capabilityId: string, implementation: (payload: Record<string, unknown>) => Promise<unknown>): void {
-      providers.set(capabilityId, {
-        send: vi.fn(implementation),
-      });
+    setProvider(capabilityId: string, provider: Record<string, unknown>): void {
+      providers.set(capabilityId, provider);
     },
 
-    getSendMock(capabilityId: string): ReturnType<typeof vi.fn> {
+    getProviderMethodMock(capabilityId: string, methodName: string): ReturnType<typeof vi.fn> {
       const provider = providers.get(capabilityId);
       if (!provider) {
         throw new Error(`capability provider not registered: ${capabilityId}`);
       }
-      return provider.send;
+
+      const method = provider[methodName];
+      if (!method || typeof method !== "function") {
+        throw new Error(`provider method not found: ${capabilityId}.${methodName}`);
+      }
+
+      return method as ReturnType<typeof vi.fn>;
     },
 
     reset(): void {
@@ -152,9 +153,11 @@ describe("system plugin: talk-engine", () => {
   });
 
   it("supports talk.nostream and converts payload into llm gateway format", async () => {
-    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, async () => createLlmEmitter({
-      chunks: ["hello", " world"],
-    }));
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => createLlmEmitter({
+        chunks: ["hello", " world"],
+      })),
+    });
 
     const plugin = await loadPluginModule();
     await plugin.online({ method: "local", relayEnabled: false });
@@ -169,26 +172,27 @@ describe("system plugin: talk-engine", () => {
 
     expect(result).toEqual({ reply: "hello world" });
 
-    const llmSend = registryMock.getSendMock(CAPABILITY_LLM_CHAT_STREAM);
-    const payload = llmSend.mock.calls[0][0] as {
-      action: string;
+    const llmStreamChat = registryMock.getProviderMethodMock(CAPABILITY_LLM_CHAT_STREAM, "streamChat");
+    const payload = llmStreamChat.mock.calls[0][0] as {
       model: string;
       messages: Array<{ role: string; content: string }>;
       params: { temperature: number };
     };
 
-    expect(payload.action).toBe("system.llm.remote.chat.stream");
     expect(payload.model).toBe("gpt-test");
     expect(payload.messages[0]).toEqual({
       role: "user",
       content: "<sender=tester>: hi there",
     });
     expect(payload.params).toEqual({ temperature: 0.1 });
+    expect(payload).not.toHaveProperty("action");
   });
 
   it("supports talk.stream and returns llm stream emitter as-is", async () => {
     const llmEmitter = createLlmEmitter({ chunks: ["streaming"] });
-    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, async () => llmEmitter);
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => llmEmitter),
+    });
 
     const plugin = await loadPluginModule();
     await plugin.online({ method: "local", relayEnabled: false });
@@ -205,26 +209,36 @@ describe("system plugin: talk-engine", () => {
     const callSequence: string[] = [];
     const conversationStream = new EventEmitter();
 
-    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, async () => conversationStream);
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, async () => {
-      callSequence.push("typing.start");
-      return { ok: true };
+    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, {
+      openConversationStream: vi.fn(async () => conversationStream),
     });
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, async () => {
-      callSequence.push("typing.stop");
-      return { ok: true };
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, {
+      startTyping: vi.fn(async () => {
+        callSequence.push("typing.start");
+        return { ok: true };
+      }),
     });
-    registryMock.setProvider(CAPABILITY_DISCORD_SEND, async (payload) => {
-      callSequence.push(`message.send:${String(payload.message)}`);
-      return { ok: true, channelId: payload.channelId, messageId: "m1" };
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, {
+      stopTyping: vi.fn(async () => {
+        callSequence.push("typing.stop");
+        return { ok: true };
+      }),
     });
-    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, async (payload) => {
-      callSequence.push("llm.send");
-      const messages = payload.messages as Array<{ content?: string }>;
-      const content = messages[0]?.content ?? "";
-      return createLlmEmitter({
-        chunks: [`reply:${content}`],
-      });
+    registryMock.setProvider(CAPABILITY_DISCORD_SEND, {
+      sendMessage: vi.fn(async (payload: Record<string, unknown>) => {
+        callSequence.push(`message.send:${String(payload.message)}`);
+        return { ok: true, channelId: payload.channelId, messageId: "m1" };
+      }),
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async (payload: Record<string, unknown>) => {
+        callSequence.push("llm.send");
+        const messages = payload.messages as Array<{ content?: string }>;
+        const content = messages[0]?.content ?? "";
+        return createLlmEmitter({
+          chunks: [`reply:${content}`],
+        });
+      }),
     });
 
     const plugin = await loadPluginModule();
@@ -246,19 +260,29 @@ describe("system plugin: talk-engine", () => {
     const sentMessages: string[] = [];
     let stopCount = 0;
 
-    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, async () => conversationStream);
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, async () => ({ ok: true }));
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, async () => {
-      stopCount += 1;
-      return { ok: true };
+    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, {
+      openConversationStream: vi.fn(async () => conversationStream),
     });
-    registryMock.setProvider(CAPABILITY_DISCORD_SEND, async (payload) => {
-      sentMessages.push(String(payload.message));
-      return { ok: true, channelId: payload.channelId, messageId: "m2" };
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, {
+      startTyping: vi.fn(async () => ({ ok: true })),
     });
-    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, async () => createLlmEmitter({
-      error: new Error("llm failed"),
-    }));
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, {
+      stopTyping: vi.fn(async () => {
+        stopCount += 1;
+        return { ok: true };
+      }),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_SEND, {
+      sendMessage: vi.fn(async (payload: Record<string, unknown>) => {
+        sentMessages.push(String(payload.message));
+        return { ok: true, channelId: payload.channelId, messageId: "m2" };
+      }),
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => createLlmEmitter({
+        error: new Error("llm failed"),
+      })),
+    });
 
     const plugin = await loadPluginModule();
     await plugin.online({ method: "local" });
@@ -275,19 +299,29 @@ describe("system plugin: talk-engine", () => {
     const sentMessages: string[] = [];
     let sequence = 0;
 
-    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, async () => conversationStream);
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, async () => ({ ok: true }));
-    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, async () => ({ ok: true }));
-    registryMock.setProvider(CAPABILITY_DISCORD_SEND, async (payload) => {
-      sentMessages.push(String(payload.message));
-      return { ok: true, channelId: payload.channelId, messageId: "m3" };
+    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, {
+      openConversationStream: vi.fn(async () => conversationStream),
     });
-    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, async () => {
-      sequence += 1;
-      return createLlmEmitter({
-        chunks: [`reply-${sequence}`],
-        delayMs: sequence === 1 ? 40 : 0,
-      });
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, {
+      startTyping: vi.fn(async () => ({ ok: true })),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, {
+      stopTyping: vi.fn(async () => ({ ok: true })),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_SEND, {
+      sendMessage: vi.fn(async (payload: Record<string, unknown>) => {
+        sentMessages.push(String(payload.message));
+        return { ok: true, channelId: payload.channelId, messageId: "m3" };
+      }),
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => {
+        sequence += 1;
+        return createLlmEmitter({
+          chunks: [`reply-${sequence}`],
+          delayMs: sequence === 1 ? 40 : 0,
+        });
+      }),
     });
 
     const plugin = await loadPluginModule();
@@ -300,4 +334,3 @@ describe("system plugin: talk-engine", () => {
     expect(sentMessages).toEqual(["reply-1", "reply-2"]);
   });
 });
-

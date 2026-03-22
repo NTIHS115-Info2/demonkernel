@@ -557,6 +557,30 @@ export default {
     return { status: -1 };
   },
 
+  async streamChat(input: RemoteSendOptions): Promise<ChatStreamEmitter> {
+    if (!runtimeConfig || !online) {
+      throw new Error("remote strategy is not online");
+    }
+
+    return createChatEmitter(runtimeConfig, normalizeChatInput(input));
+  },
+
+  async listModels(input: Record<string, unknown> = {}): Promise<ModelsListResult> {
+    if (!runtimeConfig || !online) {
+      throw new Error("remote strategy is not online");
+    }
+
+    return requestModelsList(runtimeConfig, isRecord(input) ? input : {});
+  },
+
+  async checkHealth(input: Record<string, unknown> = {}): Promise<HealthCheckResult> {
+    if (!runtimeConfig || !online) {
+      throw new Error("remote strategy is not online");
+    }
+
+    return requestHealthCheck(runtimeConfig, isRecord(input) ? input : {});
+  },
+
   async send(options: SendOptions): Promise<unknown> {
     if (!runtimeConfig || !online) {
       throw new Error("remote strategy is not online");
@@ -566,11 +590,11 @@ export default {
 
     switch (action) {
       case "chat.stream":
-        return createChatEmitter(runtimeConfig, normalizeChatInput(options as RemoteSendOptions));
+        return this.streamChat(options as RemoteSendOptions);
       case "models.list":
-        return requestModelsList(runtimeConfig, isRecord(options) ? options : {});
+        return this.listModels(isRecord(options) ? options : {});
       case "health.check":
-        return requestHealthCheck(runtimeConfig, isRecord(options) ? options : {});
+        return this.checkHealth(isRecord(options) ? options : {});
       default:
         throw new Error(`unsupported action: ${String(action)}`);
     }

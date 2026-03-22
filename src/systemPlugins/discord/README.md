@@ -1,35 +1,18 @@
 # systemPlugins/discord
 
-`discord` 是針對 Demonkernel 新架構的 Discord system plugin，提供三類 I/O 能力：
+`discord` 是 Demonkernel 的 Discord I/O system plugin，提供四個 capability provider：
 
-- 輸入：Discord inbound 訊息流 (`conversation.stream`)
-- 輸出：Discord 訊息發送 (`message.send`)
-- 控制：Discord typing session (`typing.start` / `typing.stop`)
+- `system.discord.conversation.stream` -> `openConversationStream()`
+- `system.discord.message.send` -> `sendMessage(input)`
+- `system.discord.typing.start` -> `startTyping(input)`
+- `system.discord.typing.stop` -> `stopTyping(input)`
 
-## 1. 遷移範圍
+## 1. 版本與能力契約
 
-- 保留：群組 mention / 回覆 bot / owner DM 的輸入路由
-- 保留：指定頻道發送訊息
-- 新增：typing session 能力，支援 reference count 與持續 `sendTyping()` 心跳
-- 移除：`func` 介面、多功能命令分派、舊內部對話實作
-- 新契約：`send()` 採 action-only 路由
+- plugin version: `0.3.0`
+- capability schema version: `2.0.0`（provider-first，移除 capability action alias 契約）
 
-## 2. 目錄結構
-
-```text
-discord/
-  README.md
-  plugin.manifest.json
-  index.ts
-  strategies/
-    index.ts
-    local/
-      index.ts
-      types.ts
-      typingSessionManager.ts
-```
-
-## 3. Online Options（local）
+## 2. Online Options（local）
 
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
@@ -45,13 +28,11 @@ discord/
 - `DISCORD_USER_ID`（owner 預設）
 - `DISCORD_CHANNEL_ID`（channelId 預設）
 
-## 4. Send Contract（Action-Only）
+## 3. Capability Provider Contract
 
-### 4.1 `action = "conversation.stream"` / `system.discord.conversation.stream`
+### 3.1 `openConversationStream()`
 
-回傳：`EventEmitter`
-
-事件：
+回傳 `EventEmitter`，事件：
 
 - `data(payload)`
 - `error(error)`
@@ -76,12 +57,7 @@ discord/
 }
 ```
 
-### 4.2 `action = "message.send"` / `system.discord.message.send`
-
-輸入：
-
-- `message`（必填）
-- `channelId`（選填；若未提供則使用 online/default channelId）
+### 3.2 `sendMessage({ channelId?, message })`
 
 回傳：
 
@@ -93,16 +69,7 @@ discord/
 }
 ```
 
-### 4.3 `action = "typing.start"` / `system.discord.typing.start`
-
-輸入：
-
-- `channelId`（選填；若未提供則使用 online/default channelId）
-
-行為：
-
-- 對指定 channel 建立 typing session（reference count +1）
-- session 存活期間每 `typingIntervalMs` 續發 `sendTyping()`
+### 3.3 `startTyping({ channelId? })`
 
 回傳：
 
@@ -115,16 +82,7 @@ discord/
 }
 ```
 
-### 4.4 `action = "typing.stop"` / `system.discord.typing.stop`
-
-輸入：
-
-- `channelId`（選填；若未提供則使用 online/default channelId）
-
-行為：
-
-- typing session reference count -1
-- 當 refCount 歸零時停止該 channel typing session
+### 3.4 `stopTyping({ channelId? })`
 
 回傳：
 
@@ -137,53 +95,12 @@ discord/
 }
 ```
 
-## 5. 訊息過濾規則
+## 4. `send()` 相容入口
 
-1. 群組訊息只處理：
-- mention bot
-- reply bot
+`send(options)` 仍保留，供 plugin-level 呼叫使用；但 capability registry 不再依賴 `send + action` 進行能力路由。
 
-2. 私訊（DM）只處理：
-- owner DM -> 輸出到 `conversation.stream`
-- 非 owner DM -> 回覆固定文字，不進 stream
+## 5. 訊息與 Typing 規則
 
-3. 頻道過濾：
-- `channelId=global`（或未設定）代表全域
-- 指定 `channelId` 時僅過濾群組訊息，DM 仍依 owner 規則判斷
-
-## 6. Typing Session 規則
-
-1. session key 以 `channelId` 為準。
-2. `typing.start` 採 reference count（+1）。
-3. `typing.stop` 採 reference count（-1），歸零才停止。
-4. `offline()` 時會清理所有 session，避免殘留 timer。
-
-## 7. Lifecycle 契約
-
-遵循 throw-only lifecycle：
-
-- `online(options): Promise<void>`
-- `offline(): Promise<void>`
-- `restart(options): Promise<void>`
-- `state(): Promise<{ status: StateCode }>`
-- `send(options): Promise<unknown>`
-
-失敗時直接 throw，由 PluginsManager 統一回收。
-
-## 8. 測試覆蓋
-
-對應測試檔：
-
-- `tests/systemPlugins/discord.test.ts`
-- `tests/pluginsManager/discord.integration.test.ts`
-
-覆蓋內容：
-
-- lifecycle（online/offline/restart/state）
-- secrets 缺值錯誤
-- inbound mention/reply/owner DM
-- 非 owner DM 固定回覆
-- channel filter
-- `message.send` 成功與失敗
-- `typing.start/typing.stop` reference count 與清理
-- capability discover/registry integration
+1. 群組只處理 mention bot / reply bot。
+2. DM 只接受 owner，非 owner DM 回固定文案。
+3. typing session 以 `channelId` 做 reference count；`offline()` 會清理全部 session。

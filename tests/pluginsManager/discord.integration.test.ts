@@ -48,61 +48,84 @@ function writeDiscordFixturePlugin(basePath: string): void {
   const moduleCode = `
 const { EventEmitter } = require("events");
 let online = false;
+const conversation = new EventEmitter();
 
 module.exports = {
   async online() { online = true; },
   async offline() { online = false; },
   async restart(options) { await this.offline(); await this.online(options); },
   async state() { return { status: online ? 1 : 0 }; },
+  async openConversationStream() {
+    return conversation;
+  },
+  async sendMessage(payload) {
+    return {
+      ok: true,
+      channelId: payload?.channelId ?? "fixture-channel",
+      messageId: "fixture-message-id"
+    };
+  },
+  async startTyping(payload) {
+    return {
+      ok: true,
+      channelId: payload?.channelId ?? "fixture-channel",
+      active: true,
+      refCount: 1
+    };
+  },
+  async stopTyping(payload) {
+    return {
+      ok: true,
+      channelId: payload?.channelId ?? "fixture-channel",
+      active: false,
+      refCount: 0
+    };
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.discord.conversation.stream",
+        createProvider(pluginInstance) {
+          return { openConversationStream: pluginInstance.openConversationStream.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.message.send",
+        createProvider(pluginInstance) {
+          return { sendMessage: pluginInstance.sendMessage.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.typing.start",
+        createProvider(pluginInstance) {
+          return { startTyping: pluginInstance.startTyping.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.discord.typing.stop",
+        createProvider(pluginInstance) {
+          return { stopTyping: pluginInstance.stopTyping.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
   async send(payload) {
     const action = payload?.action;
 
     if (action === "conversation.stream" || action === "system.discord.conversation.stream") {
-      const emitter = new EventEmitter();
-      setTimeout(() => {
-        emitter.emit("data", {
-          source: "mention",
-          content: "fixture-content",
-          rawContent: "<@bot> fixture-content",
-          channelId: "fixture-channel",
-          guildId: "fixture-guild",
-          messageId: "fixture-message",
-          replyToMessageId: null,
-          author: {
-            id: "fixture-user",
-            name: "fixture-name",
-            isOwner: false
-          },
-          receivedAt: new Date().toISOString()
-        });
-      }, 0);
-      return emitter;
+      return this.openConversationStream();
     }
 
     if (action === "message.send" || action === "system.discord.message.send") {
-      return {
-        ok: true,
-        channelId: payload?.channelId ?? "fixture-channel",
-        messageId: "fixture-message-id"
-      };
+      return this.sendMessage(payload);
     }
 
     if (action === "typing.start" || action === "system.discord.typing.start") {
-      return {
-        ok: true,
-        channelId: payload?.channelId ?? "fixture-channel",
-        active: true,
-        refCount: 1
-      };
+      return this.startTyping(payload);
     }
 
     if (action === "typing.stop" || action === "system.discord.typing.stop") {
-      return {
-        ok: true,
-        channelId: payload?.channelId ?? "fixture-channel",
-        active: false,
-        refCount: 0
-      };
+      return this.stopTyping(payload);
     }
 
     throw new Error("unsupported action");
@@ -171,26 +194,44 @@ describe("pluginsManager integration: discord capabilities", () => {
     const typingStartProvider = capabilityRegistry.resolve("system.discord.typing.start");
     const typingStopProvider = capabilityRegistry.resolve("system.discord.typing.stop");
 
-    const streamResult = await streamProvider.send({
-      action: "system.discord.conversation.stream",
-    }) as { on?: (...args: unknown[]) => unknown };
+    expect((sendProvider as Record<string, unknown>).startTyping).toBeUndefined();
+    expect((typingStartProvider as Record<string, unknown>).sendMessage).toBeUndefined();
+
+    const streamResult = await (
+      streamProvider as { openConversationStream: () => Promise<{ on?: (...args: unknown[]) => unknown }> }
+    ).openConversationStream();
     expect(typeof streamResult.on).toBe("function");
 
-    const sendResult = await sendProvider.send({
-      action: "system.discord.message.send",
+    const sendResult = await (
+      sendProvider as {
+        sendMessage: (input: { channelId: string; message: string }) => Promise<{
+          ok: boolean;
+          channelId: string;
+          messageId: string | null;
+        }>;
+      }
+    ).sendMessage({
       channelId: "target-channel",
       message: "hello",
-    }) as { ok: boolean; channelId: string; messageId: string | null };
+    });
     expect(sendResult).toEqual({
       ok: true,
       channelId: "target-channel",
       messageId: "fixture-message-id",
     });
 
-    const typingStartResult = await typingStartProvider.send({
-      action: "system.discord.typing.start",
+    const typingStartResult = await (
+      typingStartProvider as {
+        startTyping: (input: { channelId: string }) => Promise<{
+          ok: boolean;
+          channelId: string;
+          active: boolean;
+          refCount: number;
+        }>;
+      }
+    ).startTyping({
       channelId: "target-channel",
-    }) as { ok: boolean; channelId: string; active: boolean; refCount: number };
+    });
     expect(typingStartResult).toEqual({
       ok: true,
       channelId: "target-channel",
@@ -198,10 +239,18 @@ describe("pluginsManager integration: discord capabilities", () => {
       refCount: 1,
     });
 
-    const typingStopResult = await typingStopProvider.send({
-      action: "system.discord.typing.stop",
+    const typingStopResult = await (
+      typingStopProvider as {
+        stopTyping: (input: { channelId: string }) => Promise<{
+          ok: boolean;
+          channelId: string;
+          active: boolean;
+          refCount: number;
+        }>;
+      }
+    ).stopTyping({
       channelId: "target-channel",
-    }) as { ok: boolean; channelId: string; active: boolean; refCount: number };
+    });
     expect(typingStopResult).toEqual({
       ok: true,
       channelId: "target-channel",

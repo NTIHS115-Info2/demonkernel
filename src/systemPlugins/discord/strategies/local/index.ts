@@ -296,7 +296,7 @@ function resolveAction(options: SendOptions): string {
   return action.trim();
 }
 
-async function sendMessage(options: SendOptions): Promise<DiscordMessageSendResult> {
+async function sendMessageInternal(options: SendOptions): Promise<DiscordMessageSendResult> {
   const payload = isRecord(options) ? options : {};
   const message = normalizeOptionalString(payload.message);
   if (!message) {
@@ -345,6 +345,11 @@ async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): 
   }
 
   return manager.stop(channelId);
+}
+
+function openConversationStream(): DiscordConversationStream {
+  getRuntimeClient();
+  return conversationStream;
 }
 
 function assertLocalMethod(method: unknown, operation: string): void {
@@ -482,24 +487,43 @@ export default {
     return { status: 1 };
   },
 
+  async openConversationStream(): Promise<DiscordConversationStream> {
+    return openConversationStream();
+  },
+
+  async sendMessage(input: SendOptions): Promise<DiscordMessageSendResult> {
+    getRuntimeClient();
+    return sendMessageInternal(input);
+  },
+
+  async startTyping(input: SendOptions): Promise<DiscordTypingControlResult> {
+    getRuntimeClient();
+    return sendTypingControl(input, "start");
+  },
+
+  async stopTyping(input: SendOptions): Promise<DiscordTypingControlResult> {
+    getRuntimeClient();
+    return sendTypingControl(input, "stop");
+  },
+
   async send(options: SendOptions): Promise<unknown> {
     getRuntimeClient();
 
     const action = resolveAction(options);
     if (action === ACTION_CONVERSATION_STREAM || action === ACTION_CONVERSATION_STREAM_CAPABILITY) {
-      return conversationStream;
+      return this.openConversationStream();
     }
 
     if (action === ACTION_MESSAGE_SEND || action === ACTION_MESSAGE_SEND_CAPABILITY) {
-      return sendMessage(options);
+      return this.sendMessage(options);
     }
 
     if (action === ACTION_TYPING_START || action === ACTION_TYPING_START_CAPABILITY) {
-      return sendTypingControl(options, "start");
+      return this.startTyping(options);
     }
 
     if (action === ACTION_TYPING_STOP || action === ACTION_TYPING_STOP_CAPABILITY) {
-      return sendTypingControl(options, "stop");
+      return this.stopTyping(options);
     }
 
     throw new Error(`unsupported action: ${action}`);

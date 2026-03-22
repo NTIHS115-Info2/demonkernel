@@ -1,60 +1,33 @@
 # systemPlugins/talk-engine
 
-`talk-engine` 是對話核心 system plugin，負責編排其他 system plugin 能力，提供：
+`talk-engine` 是對話編排核心 plugin，依賴 `llm-remote-gateway` 與 `discord` 的 capability providers。
 
-- 通用對話能力：`talk.nostream` / `talk.stream`
-- 可選 Discord relay（預設啟用）：自動接 Discord inbound -> LLM -> Discord outbound
+提供兩個 capability provider：
 
-## 1. 目錄結構
+- `system.talk.engine.nostream` -> `generateReply(input)`
+- `system.talk.engine.stream` -> `streamReply(input)`
 
-```text
-talk-engine/
-  README.md
-  plugin.manifest.json
-  index.ts
-  strategies/
-    index.ts
-    local/
-      index.ts
-      constants.ts
-      types.ts
-      input.ts
-      streamCollector.ts
-      relayQueue.ts
-```
+## 1. 版本與依賴
 
-## 2. 依賴
+- plugin version: `0.2.0`
+- capability schema version: `2.0.0`
+- 依賴版本：
+  - `system:llm-remote-gateway@1.1.0`
+  - `system:discord@0.3.0`
 
-manifest 依賴（精確版本）：
-
-- `system:llm-remote-gateway@1.0.0`
-- `system:discord@0.2.0`
-
-## 3. Online Options（local）
+## 2. Online Options（local）
 
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `method` | `"local"` | Yes | strategy 固定 local |
-| `relayEnabled` | `boolean` | No | 是否自動啟用 Discord relay，預設 `true` |
-| `relayErrorReply` | `string` | No | relay 失敗時固定回覆文案，預設 `目前無法回覆，請稍後再試。` |
+| `relayEnabled` | `boolean` | No | 是否啟用 Discord relay（預設 `true`） |
+| `relayErrorReply` | `string` | No | relay 失敗時固定回覆文案 |
 
-## 4. Send Contract（Action-Only）
+## 3. Capability Provider Contract
 
-### 4.1 `action = "talk.nostream"` / `system.talk.engine.nostream`
+### 3.1 `generateReply({ message, talker?, model?, tools?, tool_choice?, params? ... })`
 
-輸入：
-
-- `message`（必填）
-- `talker`（選填）
-- `model` / `params` / `tools` / `tool_choice`（選填 passthrough）
-
-行為：
-
-1. 轉換輸入為 llm gateway `chat.stream` payload。
-2. 聚合 stream chunk。
-3. 回傳完整結果。
-
-輸出：
+- 內部呼叫 LLM provider `streamChat()`，聚合 stream chunk 後回傳：
 
 ```json
 {
@@ -62,59 +35,19 @@ manifest 依賴（精確版本）：
 }
 ```
 
-### 4.2 `action = "talk.stream"` / `system.talk.engine.stream`
+### 3.2 `streamReply({ message, talker?, model?, tools?, tool_choice?, params? ... })`
 
-輸入：與 `talk.nostream` 相同。
+- 直接回傳 LLM provider 的 stream emitter（不包裝）。
 
-輸出：llm gateway EventEmitter（透傳，不包裝）
+## 4. Relay 流程（`relayEnabled=true`）
 
-- `data(content, raw, reasoning)`
-- `end()`
-- `error(error)`
-- `abort()`
+1. 透過 Discord provider `openConversationStream()` 訂閱 inbound 事件。
+2. 事件進 FIFO queue。
+3. 每筆先呼叫 `startTyping()`。
+4. 用 `generateReply()` 產生回覆。
+5. 呼叫 `sendMessage()` 回到原 channel。
+6. 最後呼叫 `stopTyping()`。
 
-## 5. Discord Relay（預設啟用）
+## 5. `send()` 相容入口
 
-`online()` 後若 `relayEnabled=true`，流程如下：
-
-1. 訂閱 `system.discord.conversation.stream`
-2. 每筆事件進入內部 FIFO queue
-3. 每筆處理前呼叫 `system.discord.typing.start`
-4. 以 `talk.nostream` 生成 reply
-5. 呼叫 `system.discord.message.send` 回覆到原 `channelId`
-6. 失敗時改回固定錯誤文案
-7. 結束時呼叫 `system.discord.typing.stop`
-
-## 6. 輸入轉換規則
-
-- 單輪無歷史。
-- 若有 `talker`，user content 會轉為：`<sender={talker}>: {message}`。
-- 若無 `talker`，直接使用 `message`。
-
-## 7. Lifecycle 契約
-
-遵循 throw-only lifecycle：
-
-- `online(options): Promise<void>`
-- `offline(): Promise<void>`
-- `restart(options): Promise<void>`
-- `state(): Promise<{ status: StateCode }>`
-- `send(options): Promise<unknown>`
-
-## 8. 測試覆蓋
-
-對應測試檔：
-
-- `tests/systemPlugins/talk-engine.test.ts`
-- `tests/pluginsManager/talk-engine.integration.test.ts`
-
-覆蓋內容：
-
-- lifecycle
-- `talk.nostream` 聚合回覆
-- `talk.stream` emitter 透傳
-- payload 轉換
-- relay 自動流程與 FIFO
-- relay 錯誤回覆
-- capability discover/registry integration
-
+`send(options)` 仍保留 plugin-level 呼叫（`talk.nostream` / `talk.stream`）；但 capability registry 對外正式契約為 `generateReply/streamReply`。

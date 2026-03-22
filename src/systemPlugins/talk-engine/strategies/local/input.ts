@@ -92,7 +92,6 @@ export function buildGatewayPayload(input: NormalizedTalkInput): Record<string, 
     : input.message;
 
   const payload: Record<string, unknown> = {
-    action: "system.llm.remote.chat.stream",
     messages: [
       {
         role: "user",
@@ -141,4 +140,3 @@ export function buildGatewayPayload(input: NormalizedTalkInput): Record<string, 
 
   return payload;
 }
-

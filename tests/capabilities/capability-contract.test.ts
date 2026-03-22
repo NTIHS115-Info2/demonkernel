@@ -84,7 +84,7 @@ module.exports = {
     return { status: 1 };
   },
 
-  async send(payload) {
+  async echoMessage(payload) {
     if (typeof payload.message !== "string") {
       throw new Error("payload.message must be a string");
     }
@@ -99,6 +99,23 @@ module.exports = {
       reply: payload.message,
       method: mode,
     };
+  },
+
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.echo.message",
+        createProvider(pluginInstance) {
+          return {
+            echoMessage: pluginInstance.echoMessage.bind(pluginInstance),
+          };
+        },
+      },
+    ];
+  },
+
+  async send(payload) {
+    return this.echoMessage(payload);
   },
 };
 `;

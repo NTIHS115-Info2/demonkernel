@@ -5,7 +5,7 @@ export const systemDefaultCapabilities: CapabilityDefinition[] = [
     id: "system.echo.message",
     displayName: "System Echo Message",
     description: "Echoes an input message and returns the active runtime method.",
-    version: "1.0.0",
+    version: "2.0.0",
     input: {
       type: "object",
       properties: {

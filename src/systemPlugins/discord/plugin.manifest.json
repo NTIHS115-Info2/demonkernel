@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "discord",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Discord I/O system plugin with inbound conversation stream, outbound message send, and typing control actions.",
     "type": "system",
     "entry": "index.js"
@@ -87,16 +87,10 @@
         "id": "system.discord.conversation.stream",
         "displayName": "Discord Conversation Stream",
         "description": "Stream inbound Discord messages that pass mention/reply/owner-DM filters.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["conversation.stream", "system.discord.conversation.stream"]
-            }
-          },
-          "required": ["action"],
+          "properties": {},
           "additionalProperties": true
         },
         "output": {
@@ -109,18 +103,14 @@
         "id": "system.discord.message.send",
         "displayName": "Discord Message Send",
         "description": "Send outbound message to a target Discord channel.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["message.send", "system.discord.message.send"]
-            },
             "channelId": { "type": "string" },
             "message": { "type": "string" }
           },
-          "required": ["action", "message"],
+          "required": ["message"],
           "additionalProperties": true
         },
         "output": {
@@ -138,17 +128,13 @@
         "id": "system.discord.typing.start",
         "displayName": "Discord Typing Start",
         "description": "Start or retain a typing session on a Discord channel.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["typing.start", "system.discord.typing.start"]
-            },
             "channelId": { "type": "string" }
           },
-          "required": ["action"],
+          "required": [],
           "additionalProperties": true
         },
         "output": {
@@ -167,17 +153,13 @@
         "id": "system.discord.typing.stop",
         "displayName": "Discord Typing Stop",
         "description": "Release one typing session reference on a Discord channel.",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "input": {
           "type": "object",
           "properties": {
-            "action": {
-              "type": "string",
-              "enum": ["typing.stop", "system.discord.typing.stop"]
-            },
             "channelId": { "type": "string" }
           },
-          "required": ["action"],
+          "required": [],
           "additionalProperties": true
         },
         "output": {

@@ -22,7 +22,12 @@ import { RelayQueue } from "./relayQueue";
 import { collectStreamReply } from "./streamCollector";
 import type {
   DiscordConversationEvent,
+  DiscordConversationProvider,
   DiscordConversationStream,
+  DiscordMessageSendProvider,
+  DiscordTypingStartProvider,
+  DiscordTypingStopProvider,
+  LlmChatStreamProvider,
   LlmStreamEmitter,
   NormalizedTalkInput,
   RelayRuntime,
@@ -30,10 +35,6 @@ import type {
   TalkOnlineOptions,
   TalkSendInput,
 } from "./types";
-
-type CapabilityProvider = {
-  send(input: SendOptions): Promise<unknown>;
-};
 
 type LocalRuntime = {
   online: boolean;
@@ -91,10 +92,46 @@ function ensureOnline(): void {
   }
 }
 
-function resolveProvider(capabilityId: string): CapabilityProvider {
-  const provider = capabilityRegistry.resolve(capabilityId) as CapabilityProvider;
-  if (!provider || typeof provider.send !== "function") {
-    throw new Error(`capability provider is invalid: ${capabilityId}`);
+function resolveProvider(capabilityId: string): unknown {
+  return capabilityRegistry.resolve(capabilityId);
+}
+
+function resolveLlmProvider(): LlmChatStreamProvider {
+  const provider = resolveProvider(CAPABILITY_LLM_CHAT_STREAM) as LlmChatStreamProvider;
+  if (!provider || typeof provider.streamChat !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_LLM_CHAT_STREAM}`);
+  }
+  return provider;
+}
+
+function resolveDiscordConversationProvider(): DiscordConversationProvider {
+  const provider = resolveProvider(CAPABILITY_DISCORD_STREAM) as DiscordConversationProvider;
+  if (!provider || typeof provider.openConversationStream !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_DISCORD_STREAM}`);
+  }
+  return provider;
+}
+
+function resolveDiscordSendProvider(): DiscordMessageSendProvider {
+  const provider = resolveProvider(CAPABILITY_DISCORD_SEND) as DiscordMessageSendProvider;
+  if (!provider || typeof provider.sendMessage !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_DISCORD_SEND}`);
+  }
+  return provider;
+}
+
+function resolveDiscordTypingStartProvider(): DiscordTypingStartProvider {
+  const provider = resolveProvider(CAPABILITY_DISCORD_TYPING_START) as DiscordTypingStartProvider;
+  if (!provider || typeof provider.startTyping !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_DISCORD_TYPING_START}`);
+  }
+  return provider;
+}
+
+function resolveDiscordTypingStopProvider(): DiscordTypingStopProvider {
+  const provider = resolveProvider(CAPABILITY_DISCORD_TYPING_STOP) as DiscordTypingStopProvider;
+  if (!provider || typeof provider.stopTyping !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_DISCORD_TYPING_STOP}`);
   }
   return provider;
 }
@@ -114,9 +151,9 @@ function assertDiscordConversationStream(value: unknown): DiscordConversationStr
 }
 
 async function requestTalkStream(input: NormalizedTalkInput): Promise<LlmStreamEmitter> {
-  const llmProvider = resolveProvider(CAPABILITY_LLM_CHAT_STREAM);
+  const llmProvider = resolveLlmProvider();
   const payload = buildGatewayPayload(input);
-  const stream = await llmProvider.send(payload as SendOptions);
+  const stream = await llmProvider.streamChat(payload);
   return assertLlmStream(stream);
 }
 
@@ -127,26 +164,23 @@ async function executeNoStream(input: NormalizedTalkInput): Promise<TalkNoStream
 }
 
 async function sendDiscordMessage(channelId: string, message: string): Promise<void> {
-  const provider = resolveProvider(CAPABILITY_DISCORD_SEND);
-  await provider.send({
-    action: "system.discord.message.send",
+  const provider = resolveDiscordSendProvider();
+  await provider.sendMessage({
     channelId,
     message,
   });
 }
 
 async function startDiscordTyping(channelId: string): Promise<void> {
-  const provider = resolveProvider(CAPABILITY_DISCORD_TYPING_START);
-  await provider.send({
-    action: "system.discord.typing.start",
+  const provider = resolveDiscordTypingStartProvider();
+  await provider.startTyping({
     channelId,
   });
 }
 
 async function stopDiscordTyping(channelId: string): Promise<void> {
-  const provider = resolveProvider(CAPABILITY_DISCORD_TYPING_STOP);
-  await provider.send({
-    action: "system.discord.typing.stop",
+  const provider = resolveDiscordTypingStopProvider();
+  await provider.stopTyping({
     channelId,
   });
 }
@@ -208,10 +242,8 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
 }
 
 async function setupRelay(): Promise<void> {
-  const streamProvider = resolveProvider(CAPABILITY_DISCORD_STREAM);
-  const streamResult = await streamProvider.send({
-    action: "system.discord.conversation.stream",
-  });
+  const streamProvider = resolveDiscordConversationProvider();
+  const streamResult = await streamProvider.openConversationStream();
   const stream = assertDiscordConversationStream(streamResult);
 
   const relayQueue = new RelayQueue<DiscordConversationEvent>({
@@ -332,10 +364,31 @@ export default {
 
     const input = normalizeTalkInput(options as TalkSendInput);
     if (input.action === "talk.stream") {
-      return requestTalkStream(input);
+      return this.streamReply(options);
     }
 
-    return executeNoStream(input);
+    return this.generateReply(options);
+  },
+
+  async generateReply(options: SendOptions): Promise<TalkNoStreamResult> {
+    ensureOnline();
+
+    const normalizedInput = normalizeTalkInput({
+      ...(isRecord(options) ? options : {}),
+      action: "talk.nostream",
+    });
+
+    return executeNoStream(normalizedInput);
+  },
+
+  async streamReply(options: SendOptions): Promise<LlmStreamEmitter> {
+    ensureOnline();
+
+    const normalizedInput = normalizeTalkInput({
+      ...(isRecord(options) ? options : {}),
+      action: "talk.stream",
+    });
+
+    return requestTalkStream(normalizedInput);
   },
 };
-

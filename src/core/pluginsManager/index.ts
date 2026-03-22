@@ -1,4 +1,11 @@
-import type { IPlugin, OnlineOptions, PluginType, SendOptions } from "../plugin-sdk";
+import type {
+  CapabilityBinding,
+  CapabilityProviderInstance,
+  IPlugin,
+  OnlineOptions,
+  PluginType,
+  SendOptions,
+} from "../plugin-sdk";
 import { createKernelLogger } from "../logger";
 import { CapabilitiesManager } from "../capabilities";
 import defaultCapabilityRegistry, { CapabilityRegistry } from "../registry";
@@ -79,6 +86,18 @@ function toFailure(key: PluginKey, reason: string): StartupFailure {
     key,
     reason,
   };
+}
+
+function ensureNonEmptyString(
+  value: unknown,
+  code: keyof typeof PluginsManagerErrorCode,
+  message: string
+): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new PluginsManagerError(code, message);
+  }
+
+  return value.trim();
 }
 
 export class PluginsManager {
@@ -513,19 +532,106 @@ export class PluginsManager {
     return handle;
   }
 
-  private registerCapabilityProviders(key: PluginKey, provider: IPlugin): void {
+  private registerCapabilityProviders(key: PluginKey, plugin: IPlugin): void {
     const capabilities = this.capabilitiesManager.listCapabilitiesByPlugin(key);
     if (capabilities.length === 0) {
       return;
     }
 
+    if (typeof plugin.getCapabilityBindings !== "function") {
+      throw new PluginsManagerError(
+        "CAPABILITY_BINDING_INVALID",
+        `${key} provides capabilities but plugin.getCapabilityBindings() is missing`
+      );
+    }
+
+    const rawBindings = plugin.getCapabilityBindings();
+    if (!Array.isArray(rawBindings) || rawBindings.length === 0) {
+      throw new PluginsManagerError(
+        "CAPABILITY_BINDING_INVALID",
+        `${key} getCapabilityBindings() must return a non-empty array`
+      );
+    }
+
+    const bindingByCapabilityId = new Map<string, CapabilityBinding>();
+    for (let index = 0; index < rawBindings.length; index += 1) {
+      const rawBinding = rawBindings[index] as CapabilityBinding;
+      if (!rawBinding || typeof rawBinding !== "object") {
+        throw new PluginsManagerError(
+          "CAPABILITY_BINDING_INVALID",
+          `${key} capability binding[${index}] must be an object`
+        );
+      }
+
+      const capabilityId = ensureNonEmptyString(
+        (rawBinding as { capabilityId?: unknown }).capabilityId,
+        "CAPABILITY_BINDING_INVALID",
+        `${key} capability binding[${index}] capabilityId must be a non-empty string`
+      );
+
+      if (typeof rawBinding.createProvider !== "function") {
+        throw new PluginsManagerError(
+          "CAPABILITY_BINDING_INVALID",
+          `${key} capability binding[${index}] createProvider must be a function`
+        );
+      }
+
+      if (bindingByCapabilityId.has(capabilityId)) {
+        throw new PluginsManagerError(
+          "CAPABILITY_BINDING_INVALID",
+          `${key} contains duplicated capability binding: ${capabilityId}`
+        );
+      }
+
+      bindingByCapabilityId.set(capabilityId, {
+        capabilityId,
+        createProvider: rawBinding.createProvider,
+      });
+    }
+
+    const declaredCapabilityIds = capabilities.map((capability) => capability.id);
+    const declaredCapabilitySet = new Set(declaredCapabilityIds);
+
+    for (const capabilityId of bindingByCapabilityId.keys()) {
+      if (!declaredCapabilitySet.has(capabilityId)) {
+        throw new PluginsManagerError(
+          "CAPABILITY_BINDING_INVALID",
+          `${key} exposes binding for undeclared capability: ${capabilityId}`
+        );
+      }
+    }
+
+    for (const capabilityId of declaredCapabilityIds) {
+      if (!bindingByCapabilityId.has(capabilityId)) {
+        throw new PluginsManagerError(
+          "CAPABILITY_BINDING_INVALID",
+          `${key} missing capability binding: ${capabilityId}`
+        );
+      }
+    }
+
     this.capabilityRegistry.removeByPluginInternal(key);
 
     try {
-      for (const capability of capabilities) {
-        this.capabilityRegistry.register(capability.id, provider, {
+      const registeredAt = new Date().toISOString();
+
+      for (const capabilityId of declaredCapabilityIds) {
+        const binding = bindingByCapabilityId.get(capabilityId) as CapabilityBinding;
+        let capabilityProvider: CapabilityProviderInstance;
+
+        try {
+          capabilityProvider = binding.createProvider(plugin) as CapabilityProviderInstance;
+        } catch (error) {
+          throw new PluginsManagerError(
+            "CAPABILITY_BINDING_INVALID",
+            `${key} failed to create provider for ${capabilityId}: ${toErrorMessage(error)}`,
+            error
+          );
+        }
+
+        this.capabilityRegistry.register(capabilityId, capabilityProvider, {
           pluginKey: key,
-          registeredAt: new Date().toISOString(),
+          registeredAt,
         });
       }
     } catch (error) {

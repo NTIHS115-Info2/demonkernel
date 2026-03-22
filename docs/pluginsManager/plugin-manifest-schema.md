@@ -174,6 +174,7 @@
    - `string`：預設能力表 ID。
    - `object`：完整能力表定義。
 3. 若插件型別不是 `system`，不可宣告 `capabilities`。
+4. 若宣告 `capabilities.provides`，插件程式碼需同步提供 `getCapabilityBindings()`，讓 manager 建立 capability 專屬 provider methods。
 
 ## 8. 完整範例
 

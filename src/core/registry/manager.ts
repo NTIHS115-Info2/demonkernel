@@ -125,10 +125,18 @@ export class CapabilityRegistry {
   }
 
   private ensureProvider(capabilityId: string, provider: CapabilityProvider): void {
-    if (!provider || typeof provider !== "object" || typeof provider.send !== "function") {
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
       throw new InvalidCapabilityProviderError(
         capabilityId,
-        `provider for ${capabilityId} must expose send(input)`
+        `provider for ${capabilityId} must be a non-empty object`
+      );
+    }
+
+    const hasCallableMember = Object.values(provider).some((member) => typeof member === "function");
+    if (!hasCallableMember) {
+      throw new InvalidCapabilityProviderError(
+        capabilityId,
+        `provider for ${capabilityId} must expose at least one callable method`
       );
     }
   }

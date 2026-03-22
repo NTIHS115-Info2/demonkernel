@@ -44,6 +44,13 @@ export interface CapabilityDefinition {
 
 export type CapabilityProvideEntry = string | CapabilityDefinition;
 
+export type CapabilityProviderInstance = Record<string, unknown>;
+
+export interface CapabilityBinding {
+  capabilityId: string;
+  createProvider(pluginInstance: unknown): CapabilityProviderInstance;
+}
+
 // ----------------- Manifest 相關型別 -----------------
 
 export type OptionSchemaField =
@@ -142,4 +149,5 @@ export interface IPlugin {
   restart(options: RestartOptions): Promise<void>;
   state(): Promise<StateResult>;
   send(options: SendOptions): Promise<unknown>;
+  getCapabilityBindings?(): CapabilityBinding[];
 }
