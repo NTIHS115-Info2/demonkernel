@@ -180,10 +180,10 @@ describe("system plugin: talk-engine", () => {
     };
 
     expect(payload.model).toBe("gpt-test");
-    expect(payload.messages[0]).toEqual({
+    expect(payload.messages).toEqual([{
       role: "user",
       content: "<sender=tester>: hi there",
-    });
+    }]);
     expect(payload.params).toEqual({ temperature: 0.1 });
     expect(payload).not.toHaveProperty("action");
   });

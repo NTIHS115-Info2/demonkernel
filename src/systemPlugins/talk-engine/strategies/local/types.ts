@@ -49,6 +49,11 @@ export interface NormalizedTalkInput {
   headers?: Record<string, string>;
 }
 
+export interface TalkPromptMessage {
+  role: "user";
+  content: string;
+}
+
 export interface DiscordConversationEvent {
   source: "mention" | "reply" | "owner_dm";
   content: string;

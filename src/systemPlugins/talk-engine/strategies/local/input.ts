@@ -1,4 +1,5 @@
 import { TALK_ACTION_ALIAS_TO_ACTION } from "./constants";
+import { composePromptMessages } from "./promptComposer";
 import type { NormalizedTalkInput, TalkSendInput } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -87,17 +88,8 @@ export function normalizeTalkInput(options: TalkSendInput): NormalizedTalkInput 
 }
 
 export function buildGatewayPayload(input: NormalizedTalkInput): Record<string, unknown> {
-  const content = input.talker
-    ? `<sender=${input.talker}>: ${input.message}`
-    : input.message;
-
   const payload: Record<string, unknown> = {
-    messages: [
-      {
-        role: "user",
-        content,
-      },
-    ],
+    messages: composePromptMessages(input),
   };
 
   if (input.model) {

@@ -1,8 +1,8 @@
 {
   "meta": {
     "name": "talk-engine",
-    "version": "0.2.0",
-    "description": "Core conversation engine that composes LLM gateway and Discord capabilities.",
+    "version": "0.3.0",
+    "description": "Core conversation engine with built-in prompt composer, plus LLM gateway and Discord capability orchestration.",
     "type": "system",
     "entry": "index.js"
   },
