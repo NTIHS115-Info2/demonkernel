@@ -106,6 +106,40 @@ function buildUrl(baseUrl: string, path: string): string {
   return `${stripTrailingSlash(baseUrl)}${normalizedPath}`;
 }
 
+type UpstreamStreamError = {
+  message: string;
+  details: unknown;
+};
+
+function extractUpstreamStreamError(payload: Record<string, unknown>): UpstreamStreamError | null {
+  const rawError = payload.error;
+  if (rawError === null || rawError === undefined) {
+    return null;
+  }
+
+  if (typeof rawError === "string") {
+    const message = rawError.trim();
+    return {
+      message: message.length > 0 ? message : "upstream stream error",
+      details: rawError,
+    };
+  }
+
+  if (!isRecord(rawError)) {
+    return {
+      message: "upstream stream error",
+      details: rawError,
+    };
+  }
+
+  return {
+    message: normalizeOptionalString(rawError.message)
+      ?? normalizeOptionalString(rawError.type)
+      ?? "upstream stream error",
+    details: rawError,
+  };
+}
+
 function resolveOnlineConfig(options: StrategyOnlineOptions): RuntimeConfig {
   if (!isRecord(options)) {
     throw new Error("online options must be an object");
@@ -337,6 +371,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
   let aborted = false;
   let retryCount = 0;
   let dataTimeout: NodeJS.Timeout | null = null;
+  let hasVisibleContent = false;
   const controller = new AbortController();
 
   const clearDataTimeout = (): void => {
@@ -344,6 +379,21 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
       clearTimeout(dataTimeout);
       dataTimeout = null;
     }
+  };
+
+  const emitTerminalEvent = (): void => {
+    if (hasVisibleContent) {
+      emitter.emit("end");
+      return;
+    }
+
+    emitter.emit("error", createTypedError({
+      type: "parse_error",
+      message: "chat stream ended without visible content",
+      reqId,
+      phase: "chat-stream-empty-content",
+      url,
+    }));
   };
 
   const attemptRequest = async (): Promise<void> => {
@@ -430,7 +480,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
               return;
             }
             aborted = true;
-            emitter.emit("end");
+            emitTerminalEvent();
             controller.abort();
             stream?.destroy();
             return;
@@ -438,12 +488,34 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
 
           try {
             const parsed = JSON.parse(data) as Record<string, unknown>;
+            const upstreamError = extractUpstreamStreamError(parsed);
+            if (upstreamError) {
+              clearDataTimeout();
+              if (aborted) {
+                return;
+              }
+
+              aborted = true;
+              emitter.emit("error", createTypedError({
+                type: "server_error",
+                message: upstreamError.message,
+                reqId,
+                phase: "chat-stream-upstream-error",
+                url,
+                details: upstreamError.details,
+              }));
+              controller.abort();
+              stream?.destroy();
+              return;
+            }
+
             const normalized = normalizeCompletionChunk(parsed);
             const content = extractCompletionContent(normalized);
             const reasoning = extractReasoningContent(normalized);
 
-            if (content || reasoning) {
-              emitter.emit("data", content || "", normalized, reasoning || null);
+            if (content.length > 0) {
+              hasVisibleContent = true;
+              emitter.emit("data", content, normalized, reasoning || null);
             }
           } catch (error) {
             logger.warn("chat stream chunk parse failed", { error: String(error), data });
@@ -457,7 +529,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
           return;
         }
         aborted = true;
-        emitter.emit("end");
+        emitTerminalEvent();
       });
 
       stream.on("error", (error) => {

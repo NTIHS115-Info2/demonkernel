@@ -206,10 +206,68 @@ describe("system plugin: llm-remote-gateway", () => {
       emitter.on("error", reject);
     });
 
+    stream.write("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n");
     stream.write("data: [DONE]\n");
 
     await expect(endPromise).resolves.toBeUndefined();
     expect(stream.destroyed).toBe(true);
+  });
+
+  it("emits server_error when upstream SSE payload contains error object", async () => {
+    const plugin = await loadPluginModule();
+    await plugin.online({
+      method: "remote",
+      baseUrl: "http://localhost:8080",
+    });
+
+    axiosMock.mockResolvedValue({
+      status: 200,
+      data: createChatSseStream([
+        "data: {\"error\":{\"message\":\"unexpected tokens remaining in message header\",\"type\":\"server_error\"}}",
+      ]),
+    });
+
+    const emitter = await plugin.send({
+      action: "chat.stream",
+      messages: [{ role: "user", content: "hi" }],
+    }) as ChatStreamEmitter;
+
+    const error = await new Promise<{ type?: string; message?: string }>((resolve, reject) => {
+      emitter.on("error", (streamError: { type?: string; message?: string }) => resolve(streamError));
+      emitter.on("end", () => reject(new Error("stream should not end successfully")));
+    });
+
+    expect(error.type).toBe("server_error");
+    expect(error.message).toContain("unexpected tokens");
+  });
+
+  it("emits parse_error when stream ends without visible content", async () => {
+    const plugin = await loadPluginModule();
+    await plugin.online({
+      method: "remote",
+      baseUrl: "http://localhost:8080",
+    });
+
+    axiosMock.mockResolvedValue({
+      status: 200,
+      data: createChatSseStream([
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}",
+        "data: [DONE]",
+      ]),
+    });
+
+    const emitter = await plugin.send({
+      action: "chat.stream",
+      messages: [{ role: "user", content: "hi" }],
+    }) as ChatStreamEmitter;
+
+    const error = await new Promise<{ type?: string; message?: string }>((resolve, reject) => {
+      emitter.on("error", (streamError: { type?: string; message?: string }) => resolve(streamError));
+      emitter.on("end", () => reject(new Error("stream should not end successfully")));
+    });
+
+    expect(error.type).toBe("parse_error");
+    expect(error.message).toContain("without visible content");
   });
 
   it("retries chat stream request and emits classified timeout error", async () => {

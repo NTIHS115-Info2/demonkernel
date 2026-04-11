@@ -39,4 +39,22 @@ describe("talk-engine local promptComposer", () => {
     expect(messages).toHaveLength(1);
     expect(Object.keys(messages[0] ?? {})).toEqual(["role", "content"]);
   });
+
+  it("prepends sanitized history messages before current user message", () => {
+    const messages = composePromptMessages({
+      message: "current",
+      talker: null,
+      historyMessages: [
+        { role: "system", content: "system-note", timestamp: 1 },
+        { role: "assistant", content: "previous-reply", timestamp: 2 },
+        { role: "tool", content: "", timestamp: 3 },
+      ],
+    });
+
+    expect(messages).toEqual([
+      { role: "system", content: "system-note" },
+      { role: "assistant", content: "previous-reply" },
+      { role: "user", content: "current" },
+    ]);
+  });
 });

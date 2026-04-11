@@ -22,12 +22,12 @@ describe("src/index integration", () => {
     process.env.TALK_RELAY_ERROR_REPLY = "請稍後再試";
 
     vi.spyOn(pluginsManager, "discoverPlugins").mockReturnValue({
-      total: 3,
-      registered: 3,
+      total: 4,
+      registered: 4,
       invalid: 0,
       byType: {
         skill: { total: 0, registered: 0, invalid: 0 },
-        system: { total: 3, registered: 3, invalid: 0 },
+        system: { total: 4, registered: 4, invalid: 0 },
       },
     });
 
@@ -44,7 +44,7 @@ describe("src/index integration", () => {
 
     await run([]);
 
-    expect(onlineSpy).toHaveBeenCalledTimes(3);
+    expect(onlineSpy).toHaveBeenCalledTimes(4);
     expect(onlineSpy).toHaveBeenNthCalledWith(1, "system:llm-remote-gateway", {
       onlineOptions: {
         method: "remote",
@@ -57,7 +57,12 @@ describe("src/index integration", () => {
         method: "local",
       },
     });
-    expect(onlineSpy).toHaveBeenNthCalledWith(3, "system:talk-engine", {
+    expect(onlineSpy).toHaveBeenNthCalledWith(3, "system:conversation-history", {
+      onlineOptions: {
+        method: "local",
+      },
+    });
+    expect(onlineSpy).toHaveBeenNthCalledWith(4, "system:talk-engine", {
       onlineOptions: {
         method: "local",
         relayEnabled: false,
@@ -71,12 +76,12 @@ describe("src/index integration", () => {
     delete process.env.LLM_REMOTE_MODEL;
 
     vi.spyOn(pluginsManager, "discoverPlugins").mockReturnValue({
-      total: 3,
-      registered: 3,
+      total: 4,
+      registered: 4,
       invalid: 0,
       byType: {
         skill: { total: 0, registered: 0, invalid: 0 },
-        system: { total: 3, registered: 3, invalid: 0 },
+        system: { total: 4, registered: 4, invalid: 0 },
       },
     });
 

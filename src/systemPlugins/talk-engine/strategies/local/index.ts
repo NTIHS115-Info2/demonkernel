@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+
 import type {
   SendOptions,
   StateResult,
@@ -13,20 +15,27 @@ import {
   CAPABILITY_DISCORD_TYPING_START,
   CAPABILITY_DISCORD_TYPING_STOP,
   CAPABILITY_LLM_CHAT_STREAM,
+  CAPABILITY_CONVERSATION_HISTORY_APPEND,
+  CAPABILITY_CONVERSATION_HISTORY_RECENT,
+  DEFAULT_HISTORY_LIMIT,
   DEFAULT_RELAY_ENABLED,
   DEFAULT_RELAY_ERROR_REPLY,
   METHOD_LOCAL,
 } from "./constants";
 import { buildGatewayPayload, normalizeTalkInput } from "./input";
+import { composePromptContent, composePromptMessages } from "./promptComposer";
 import { RelayQueue } from "./relayQueue";
 import { collectStreamReply } from "./streamCollector";
 import type {
+  ConversationHistoryAppendProvider,
+  ConversationHistoryRecentProvider,
   DiscordConversationEvent,
   DiscordConversationProvider,
   DiscordConversationStream,
   DiscordMessageSendProvider,
   DiscordTypingStartProvider,
   DiscordTypingStopProvider,
+  HistoryPromptMessage,
   LlmChatStreamProvider,
   LlmStreamEmitter,
   NormalizedTalkInput,
@@ -78,6 +87,19 @@ function normalizeOptionalString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeAssistantReply(reply: unknown): string {
+  if (typeof reply !== "string") {
+    throw new Error("llm reply must be string");
+  }
+
+  const trimmed = reply.trim();
+  if (trimmed.length === 0) {
+    throw new Error("llm reply is empty");
+  }
+
+  return trimmed;
 }
 
 function assertLocalMethod(method: unknown, operation: string): void {
@@ -136,6 +158,22 @@ function resolveDiscordTypingStopProvider(): DiscordTypingStopProvider {
   return provider;
 }
 
+function resolveHistoryAppendProvider(): ConversationHistoryAppendProvider {
+  const provider = resolveProvider(CAPABILITY_CONVERSATION_HISTORY_APPEND) as ConversationHistoryAppendProvider;
+  if (!provider || typeof provider.appendMessage !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_CONVERSATION_HISTORY_APPEND}`);
+  }
+  return provider;
+}
+
+function resolveHistoryRecentProvider(): ConversationHistoryRecentProvider {
+  const provider = resolveProvider(CAPABILITY_CONVERSATION_HISTORY_RECENT) as ConversationHistoryRecentProvider;
+  if (!provider || typeof provider.getRecentMessages !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_CONVERSATION_HISTORY_RECENT}`);
+  }
+  return provider;
+}
+
 function assertLlmStream(value: unknown): LlmStreamEmitter {
   if (!value || typeof value !== "object" || typeof (value as { on?: unknown }).on !== "function") {
     throw new Error("llm gateway did not return a valid EventEmitter");
@@ -150,17 +188,248 @@ function assertDiscordConversationStream(value: unknown): DiscordConversationStr
   return value as DiscordConversationStream;
 }
 
-async function requestTalkStream(input: NormalizedTalkInput): Promise<LlmStreamEmitter> {
+type TalkHistoryScope = {
+  conversationId?: string;
+  userId?: string;
+};
+
+function resolveHistoryScope(input: NormalizedTalkInput): TalkHistoryScope | null {
+  const scope: TalkHistoryScope = {};
+  if (input.conversationId) {
+    scope.conversationId = input.conversationId;
+  }
+  if (input.userId) {
+    scope.userId = input.userId;
+  }
+
+  if (!scope.conversationId && !scope.userId) {
+    return null;
+  }
+
+  return scope;
+}
+
+function getHistoryLimit(input: NormalizedTalkInput): number {
+  return input.historyLimit ?? DEFAULT_HISTORY_LIMIT;
+}
+
+async function loadHistoryForPrompt(input: NormalizedTalkInput): Promise<HistoryPromptMessage[]> {
+  const scope = resolveHistoryScope(input);
+  if (!scope) {
+    return [];
+  }
+
+  const provider = resolveHistoryRecentProvider();
+  const limit = getHistoryLimit(input);
+  const loaded = await provider.getRecentMessages(scope, limit);
+  if (!Array.isArray(loaded)) {
+    return [];
+  }
+
+  const historyMessages: HistoryPromptMessage[] = [];
+  for (const message of loaded) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+
+    const role = (message as { role?: unknown }).role;
+    const content = (message as { content?: unknown }).content;
+    const timestamp = (message as { timestamp?: unknown }).timestamp;
+    if (
+      (role === "system" || role === "user" || role === "assistant" || role === "tool")
+      && typeof content === "string"
+      && content.length > 0
+      && typeof timestamp === "number"
+      && Number.isFinite(timestamp)
+    ) {
+      historyMessages.push({
+        role,
+        content,
+        timestamp,
+      });
+    }
+  }
+
+  return historyMessages;
+}
+
+async function appendHistoryMessage(
+  scope: TalkHistoryScope | null,
+  role: "system" | "user" | "assistant" | "tool",
+  content: string
+): Promise<void> {
+  if (!scope || content.length === 0) {
+    return;
+  }
+
+  const provider = resolveHistoryAppendProvider();
+  await provider.appendMessage({
+    ...scope,
+    role,
+    content,
+  });
+}
+
+async function loadHistoryForPromptSafe(input: NormalizedTalkInput): Promise<HistoryPromptMessage[]> {
+  const scope = resolveHistoryScope(input);
+  if (!scope) {
+    return [];
+  }
+
+  try {
+    return await loadHistoryForPrompt(input);
+  } catch (error) {
+    logger.warn("history recent load failed, continue without history", {
+      conversationId: scope.conversationId,
+      userId: scope.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+async function appendHistoryMessageSafe(
+  scope: TalkHistoryScope | null,
+  role: "system" | "user" | "assistant" | "tool",
+  content: string
+): Promise<void> {
+  if (!scope || content.length === 0) {
+    return;
+  }
+
+  try {
+    await appendHistoryMessage(scope, role, content);
+  } catch (error) {
+    logger.warn("history append failed", {
+      conversationId: scope.conversationId,
+      userId: scope.userId,
+      role,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function createHistoryAwareStream(
+  sourceStream: LlmStreamEmitter,
+  input: NormalizedTalkInput
+): LlmStreamEmitter {
+  const wrapped = new EventEmitter() as LlmStreamEmitter;
+  const scope = resolveHistoryScope(input);
+  const chunks: string[] = [];
+  let ended = false;
+  let aborted = false;
+
+  const cleanup = (): void => {
+    sourceStream.off("data", onData);
+    sourceStream.off("error", onError);
+    sourceStream.off("end", onEnd);
+    sourceStream.off("abort", onAbort);
+  };
+
+  const onData = (...args: unknown[]): void => {
+    const chunk = args[0];
+    if (typeof chunk === "string") {
+      chunks.push(chunk);
+    } else if (chunk !== null && chunk !== undefined) {
+      chunks.push(String(chunk));
+    }
+    wrapped.emit("data", ...args);
+  };
+
+  const onError = (error: unknown): void => {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    cleanup();
+    wrapped.emit("error", error);
+  };
+
+  const onAbort = (): void => {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    aborted = true;
+    cleanup();
+    wrapped.emit("abort");
+  };
+
+  const onEnd = (): void => {
+    if (ended) {
+      return;
+    }
+    ended = true;
+    cleanup();
+    void appendHistoryMessageSafe(scope, "assistant", chunks.join("")).finally(() => {
+      if (!aborted) {
+        wrapped.emit("end");
+      }
+    });
+  };
+
+  sourceStream.on("data", onData);
+  sourceStream.on("error", onError);
+  sourceStream.on("end", onEnd);
+  sourceStream.on("abort", onAbort);
+
+  wrapped.abort = (): void => {
+    if (sourceStream.abort) {
+      sourceStream.abort();
+      return;
+    }
+
+    onAbort();
+  };
+
+  return wrapped;
+}
+
+async function executeNoStreamWithHistory(input: NormalizedTalkInput): Promise<TalkNoStreamResult> {
+  const scope = resolveHistoryScope(input);
+  const historyMessages = await loadHistoryForPromptSafe(input);
+  const userContent = composePromptContent(input);
+  await appendHistoryMessageSafe(scope, "user", userContent);
+
+  const response = await executeNoStream(input, historyMessages);
+  await appendHistoryMessageSafe(scope, "assistant", response.reply);
+  return response;
+}
+
+async function requestStreamWithHistory(input: NormalizedTalkInput): Promise<LlmStreamEmitter> {
+  const scope = resolveHistoryScope(input);
+  const historyMessages = await loadHistoryForPromptSafe(input);
+  const userContent = composePromptContent(input);
+  await appendHistoryMessageSafe(scope, "user", userContent);
+
+  const source = await requestTalkStream(input, historyMessages);
+  return createHistoryAwareStream(source, input);
+}
+
+async function requestTalkStream(
+  input: NormalizedTalkInput,
+  promptMessages?: HistoryPromptMessage[]
+): Promise<LlmStreamEmitter> {
   const llmProvider = resolveLlmProvider();
-  const payload = buildGatewayPayload(input);
+  const payload = buildGatewayPayload(
+    input,
+    composePromptMessages({
+      message: input.message,
+      talker: input.talker,
+      historyMessages: promptMessages,
+    })
+  );
   const stream = await llmProvider.streamChat(payload);
   return assertLlmStream(stream);
 }
 
-async function executeNoStream(input: NormalizedTalkInput): Promise<TalkNoStreamResult> {
-  const stream = await requestTalkStream(input);
+async function executeNoStream(
+  input: NormalizedTalkInput,
+  promptMessages?: HistoryPromptMessage[]
+): Promise<TalkNoStreamResult> {
+  const stream = await requestTalkStream(input, promptMessages);
   const reply = await collectStreamReply(stream);
-  return { reply };
+  return { reply: normalizeAssistantReply(reply) };
 }
 
 async function sendDiscordMessage(channelId: string, message: string): Promise<void> {
@@ -203,18 +472,22 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
   }
 
   const talker = normalizeOptionalString(event.author?.name);
+  const userId = normalizeOptionalString(event.author?.id);
   const normalizedInput: NormalizedTalkInput = {
     action: "talk.nostream",
     message: content,
     talker,
+    conversationId: channelId,
+    userId,
+    historyLimit: DEFAULT_HISTORY_LIMIT,
     params: {},
   };
 
   await startDiscordTyping(channelId);
 
   try {
-    const response = await executeNoStream(normalizedInput);
-    await sendDiscordMessage(channelId, response.reply || " ");
+    const response = await executeNoStreamWithHistory(normalizedInput);
+    await sendDiscordMessage(channelId, response.reply);
   } catch (error) {
     logger.error("relay event processing failed", {
       channelId,
@@ -223,6 +496,7 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
 
     try {
       await sendDiscordMessage(channelId, runtime.relay.errorReply);
+      await appendHistoryMessageSafe(resolveHistoryScope(normalizedInput), "assistant", runtime.relay.errorReply);
     } catch (sendError) {
       logger.error("relay fallback reply failed", {
         channelId,
@@ -378,7 +652,7 @@ export default {
       action: "talk.nostream",
     });
 
-    return executeNoStream(normalizedInput);
+    return executeNoStreamWithHistory(normalizedInput);
   },
 
   async streamReply(options: SendOptions): Promise<LlmStreamEmitter> {
@@ -389,6 +663,6 @@ export default {
       action: "talk.stream",
     });
 
-    return requestTalkStream(normalizedInput);
+    return requestStreamWithHistory(normalizedInput);
   },
 };

@@ -7,6 +7,9 @@ const CAPABILITY_DISCORD_STREAM = "system.discord.conversation.stream";
 const CAPABILITY_DISCORD_SEND = "system.discord.message.send";
 const CAPABILITY_DISCORD_TYPING_START = "system.discord.typing.start";
 const CAPABILITY_DISCORD_TYPING_STOP = "system.discord.typing.stop";
+const CAPABILITY_HISTORY_APPEND = "system.conversation.history.append";
+const CAPABILITY_HISTORY_RECENT = "system.conversation.history.recent";
+const CAPABILITY_HISTORY_CLEAR = "system.conversation.history.clear";
 
 const registryMock = vi.hoisted(() => {
   const providers = new Map<string, Record<string, unknown>>();
@@ -70,6 +73,7 @@ async function loadPluginModule(): Promise<PluginModule> {
 
 function createLlmEmitter(options: {
   chunks?: string[];
+  rawChunks?: Array<[unknown, unknown?, unknown?]>;
   error?: unknown;
   delayMs?: number;
 } = {}): EventEmitter & { abort: ReturnType<typeof vi.fn> } {
@@ -82,6 +86,10 @@ function createLlmEmitter(options: {
     if (options.error) {
       emitter.emit("error", options.error);
       return;
+    }
+
+    for (const rawChunk of options.rawChunks ?? []) {
+      emitter.emit("data", ...rawChunk);
     }
 
     for (const chunk of options.chunks ?? []) {
@@ -111,6 +119,21 @@ function createDiscordConversationEvent(content: string, channelId = "channel-1"
   };
 }
 
+function registerHistoryProviders(options: {
+  recentMessages?: Array<{ role: string; content: string; timestamp: number }>;
+} = {}): void {
+  const recentMessages = options.recentMessages ?? [];
+  registryMock.setProvider(CAPABILITY_HISTORY_APPEND, {
+    appendMessage: vi.fn(async () => undefined),
+  });
+  registryMock.setProvider(CAPABILITY_HISTORY_RECENT, {
+    getRecentMessages: vi.fn(async () => recentMessages),
+  });
+  registryMock.setProvider(CAPABILITY_HISTORY_CLEAR, {
+    clearConversation: vi.fn(async () => undefined),
+  });
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 1200): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
@@ -124,6 +147,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1200): Promise<void
 describe("system plugin: talk-engine", () => {
   beforeEach(() => {
     registryMock.reset();
+    registerHistoryProviders();
   });
 
   afterEach(async () => {
@@ -188,8 +212,55 @@ describe("system plugin: talk-engine", () => {
     expect(payload).not.toHaveProperty("action");
   });
 
-  it("supports talk.stream and returns llm stream emitter as-is", async () => {
-    const llmEmitter = createLlmEmitter({ chunks: ["streaming"] });
+  it("injects recent history and persists user/assistant when scope is provided", async () => {
+    registerHistoryProviders({
+      recentMessages: [
+        { role: "assistant", content: "previous answer", timestamp: Date.now() - 1000 },
+      ],
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => createLlmEmitter({
+        chunks: ["history-aware"],
+      })),
+    });
+
+    const plugin = await loadPluginModule();
+    await plugin.online({ method: "local", relayEnabled: false });
+
+    const result = await plugin.generateReply({
+      message: "new question",
+      conversationId: "conv-1",
+      userId: "user-1",
+    }) as { reply: string };
+
+    expect(result).toEqual({ reply: "history-aware" });
+
+    const llmStreamChat = registryMock.getProviderMethodMock(CAPABILITY_LLM_CHAT_STREAM, "streamChat");
+    const payload = llmStreamChat.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(payload.messages).toEqual([
+      { role: "assistant", content: "previous answer" },
+      { role: "user", content: "new question" },
+    ]);
+
+    const appendMethod = registryMock.getProviderMethodMock(CAPABILITY_HISTORY_APPEND, "appendMessage");
+    expect(appendMethod).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      userId: "user-1",
+      role: "user",
+      content: "new question",
+    });
+    expect(appendMethod).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      userId: "user-1",
+      role: "assistant",
+      content: "history-aware",
+    });
+  });
+
+  it("supports talk.stream and wraps llm emitter while persisting assistant on end", async () => {
+    const llmEmitter = createLlmEmitter({ chunks: ["stream", "-reply"] });
     registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
       streamChat: vi.fn(async () => llmEmitter),
     });
@@ -200,9 +271,39 @@ describe("system plugin: talk-engine", () => {
     const stream = await plugin.send({
       action: "system.talk.engine.stream",
       message: "stream this",
-    }) as EventEmitter;
+      conversationId: "conv-stream",
+      userId: "user-stream",
+    }) as EventEmitter & { abort?: () => void };
 
-    expect(stream).toBe(llmEmitter);
+    expect(stream).not.toBe(llmEmitter);
+    expect(typeof stream.on).toBe("function");
+    expect(typeof stream.abort).toBe("function");
+
+    const receivedChunks: string[] = [];
+    let ended = false;
+    stream.on("data", (chunk) => {
+      receivedChunks.push(String(chunk));
+    });
+    stream.on("end", () => {
+      ended = true;
+    });
+
+    await waitFor(() => ended);
+    expect(receivedChunks).toEqual(["stream", "-reply"]);
+
+    const appendMethod = registryMock.getProviderMethodMock(CAPABILITY_HISTORY_APPEND, "appendMessage");
+    expect(appendMethod).toHaveBeenCalledWith({
+      conversationId: "conv-stream",
+      userId: "user-stream",
+      role: "user",
+      content: "stream this",
+    });
+    expect(appendMethod).toHaveBeenCalledWith({
+      conversationId: "conv-stream",
+      userId: "user-stream",
+      role: "assistant",
+      content: "stream-reply",
+    });
   });
 
   it("runs relay flow: conversation -> typing.start -> llm -> message.send -> typing.stop", async () => {
@@ -292,6 +393,64 @@ describe("system plugin: talk-engine", () => {
     await waitFor(() => sentMessages.length === 1);
     expect(sentMessages[0]).toBe("目前無法回覆，請稍後再試。");
     expect(stopCount).toBe(1);
+  });
+
+  it("rejects no-stream reply when llm returns empty content", async () => {
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => createLlmEmitter({
+        rawChunks: [["", { choices: [{ delta: { reasoning_content: "think" } }] }, "think"]],
+      })),
+    });
+
+    const plugin = await loadPluginModule();
+    await plugin.online({ method: "local", relayEnabled: false });
+
+    await expect(plugin.send({
+      action: "talk.nostream",
+      message: "hi there",
+    })).rejects.toThrow("llm reply is empty");
+  });
+
+  it("uses fallback reply when relay llm output is empty", async () => {
+    const conversationStream = new EventEmitter();
+    const sentMessages: string[] = [];
+
+    registryMock.setProvider(CAPABILITY_DISCORD_STREAM, {
+      openConversationStream: vi.fn(async () => conversationStream),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_START, {
+      startTyping: vi.fn(async () => ({ ok: true })),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_TYPING_STOP, {
+      stopTyping: vi.fn(async () => ({ ok: true })),
+    });
+    registryMock.setProvider(CAPABILITY_DISCORD_SEND, {
+      sendMessage: vi.fn(async (payload: Record<string, unknown>) => {
+        sentMessages.push(String(payload.message));
+        return { ok: true, channelId: payload.channelId, messageId: "m-empty" };
+      }),
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => createLlmEmitter({
+        rawChunks: [["", { choices: [{ delta: { reasoning_content: "thinking only" } }] }, "thinking only"]],
+      })),
+    });
+
+    const plugin = await loadPluginModule();
+    await plugin.online({ method: "local" });
+
+    conversationStream.emit("data", createDiscordConversationEvent("empty please", "channel-empty"));
+
+    await waitFor(() => sentMessages.length === 1);
+    expect(sentMessages).toEqual(["目前無法回覆，請稍後再試。"]);
+
+    const appendMethod = registryMock.getProviderMethodMock(CAPABILITY_HISTORY_APPEND, "appendMessage");
+    const appendedContents = appendMethod.mock.calls
+      .map((call) => call[0] as { content?: string })
+      .map((payload) => payload.content);
+
+    expect(appendedContents).not.toContain("");
+    expect(appendedContents).toContain("目前無法回覆，請稍後再試。");
   });
 
   it("processes relay events in FIFO order", async () => {

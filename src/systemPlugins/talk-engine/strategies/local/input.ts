@@ -1,6 +1,6 @@
 import { TALK_ACTION_ALIAS_TO_ACTION } from "./constants";
 import { composePromptMessages } from "./promptComposer";
-import type { NormalizedTalkInput, TalkSendInput } from "./types";
+import type { NormalizedTalkInput, TalkPromptMessage, TalkSendInput } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -73,6 +73,9 @@ export function normalizeTalkInput(options: TalkSendInput): NormalizedTalkInput 
     action,
     message,
     talker: normalizeOptionalString(options.talker) ?? null,
+    conversationId: normalizeOptionalString(options.conversationId) ?? null,
+    userId: normalizeOptionalString(options.userId) ?? null,
+    historyLimit: normalizeOptionalNumber(options.historyLimit) ?? null,
     model: normalizeOptionalString(options.model),
     tools: Array.isArray(options.tools) ? options.tools : undefined,
     toolChoice: options.tool_choice,
@@ -87,9 +90,12 @@ export function normalizeTalkInput(options: TalkSendInput): NormalizedTalkInput 
   };
 }
 
-export function buildGatewayPayload(input: NormalizedTalkInput): Record<string, unknown> {
+export function buildGatewayPayload(
+  input: NormalizedTalkInput,
+  messages: TalkPromptMessage[] = composePromptMessages(input)
+): Record<string, unknown> {
   const payload: Record<string, unknown> = {
-    messages: composePromptMessages(input),
+    messages,
   };
 
   if (input.model) {

@@ -288,6 +288,135 @@ module.exports = {
   fs.writeFileSync(path.join(pluginDir, "index.js"), moduleCode.trimStart(), "utf-8");
 }
 
+function writeConversationHistoryFixturePlugin(basePath: string): void {
+  const pluginDir = path.join(basePath, "conversation-history");
+  fs.mkdirSync(pluginDir, { recursive: true });
+
+  writeJson(path.join(pluginDir, "plugin.manifest.json"), {
+    meta: {
+      name: "conversation-history",
+      version: "1.0.1",
+      type: "system",
+      entry: "index.js",
+    },
+    runtime: {
+      startupWeight: 25,
+      method: ["local"],
+      onlineOptions: {
+        oneOf: [
+          {
+            when: { method: "local" },
+            schema: {
+              method: { type: "string", enum: ["local"] },
+            },
+          },
+        ],
+      },
+    },
+    dependencies: {
+      skill: {},
+      system: {},
+    },
+    capabilities: {
+      provides: [
+        {
+          id: "system.conversation.history.append",
+          displayName: "Conversation History Append",
+          description: "fixture",
+          version: "1.0.0",
+          input: {
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: true,
+          },
+          output: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+        {
+          id: "system.conversation.history.recent",
+          displayName: "Conversation History Recent",
+          description: "fixture",
+          version: "1.0.0",
+          input: {
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: true,
+          },
+          output: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {},
+              additionalProperties: true,
+            },
+          },
+        },
+        {
+          id: "system.conversation.history.clear",
+          displayName: "Conversation History Clear",
+          description: "fixture",
+          version: "1.0.0",
+          input: {
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: true,
+          },
+          output: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+      ],
+    },
+  });
+
+  const moduleCode = `
+let online = false;
+
+module.exports = {
+  async online() { online = true; },
+  async offline() { online = false; },
+  async restart(options) { await this.offline(); await this.online(options); },
+  async state() { return { status: online ? 1 : 0 }; },
+  async appendMessage() { return undefined; },
+  async getRecentMessages() { return []; },
+  async clearConversation() { return undefined; },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.conversation.history.append",
+        createProvider(pluginInstance) {
+          return { appendMessage: pluginInstance.appendMessage.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.conversation.history.recent",
+        createProvider(pluginInstance) {
+          return { getRecentMessages: pluginInstance.getRecentMessages.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.conversation.history.clear",
+        createProvider(pluginInstance) {
+          return { clearConversation: pluginInstance.clearConversation.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
+  async send() {
+    return null;
+  }
+};
+`;
+
+  fs.writeFileSync(path.join(pluginDir, "index.js"), moduleCode.trimStart(), "utf-8");
+}
+
 function writeTalkEngineFixturePlugin(basePath: string): void {
   const pluginDir = path.join(basePath, "talk-engine");
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -368,6 +497,7 @@ describe("pluginsManager integration: talk-engine capabilities", () => {
 
     writeLlmFixturePlugin(tempRoot.systemPath);
     writeDiscordFixturePlugin(tempRoot.systemPath);
+    writeConversationHistoryFixturePlugin(tempRoot.systemPath);
     writeTalkEngineFixturePlugin(tempRoot.systemPath);
   });
 

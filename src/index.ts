@@ -193,6 +193,9 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       await onlineRequiredPlugin("system:discord", { method: "local" });
       startedPlugins.push("system:discord");
 
+      await onlineRequiredPlugin("system:conversation-history", { method: "local" });
+      startedPlugins.push("system:conversation-history");
+
       const talkEngineOptions: OnlineOptions = {
         method: "local",
         relayEnabled: cli.talkRelayEnabled,
