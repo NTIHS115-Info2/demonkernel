@@ -69,6 +69,22 @@ let runtime: LocalRuntime = {
   relayQueue: null,
 };
 
+type ReasoningFlow = "nostream" | "stream";
+
+type ReasoningTracker = {
+  flow: ReasoningFlow;
+  conversationId: string | null;
+  userId: string | null;
+  chunkCount: number;
+  totalLength: number;
+  firstChunkIndex: number | null;
+  firstChunkAt: number | null;
+  visibleChunkCount: number;
+  visibleLength: number;
+  dataEventCount: number;
+  snippets: string[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -100,6 +116,121 @@ function normalizeAssistantReply(reply: unknown): string {
   }
 
   return trimmed;
+}
+
+function extractReasoningFromRaw(raw: unknown): string {
+  if (!isRecord(raw)) {
+    return "";
+  }
+
+  const choices = raw.choices;
+  if (Array.isArray(choices) && choices.length > 0 && isRecord(choices[0])) {
+    const choice = choices[0];
+    const delta = isRecord(choice.delta) ? choice.delta : null;
+
+    if (delta && typeof delta.reasoning_content === "string") {
+      return delta.reasoning_content;
+    }
+    if (typeof choice.reasoning_content === "string") {
+      return choice.reasoning_content;
+    }
+  }
+
+  if (typeof raw.reasoning_content === "string") {
+    return raw.reasoning_content;
+  }
+
+  return "";
+}
+
+function normalizeDataContent(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value);
+}
+
+function parseStreamDataArgs(args: unknown[]): { content: string; raw: unknown; reasoning: string } {
+  const content = normalizeDataContent(args[0]);
+  const raw = args.length > 1 ? args[1] : null;
+  const reasoningArg = args.length > 2 ? args[2] : null;
+
+  return {
+    content,
+    raw,
+    reasoning: typeof reasoningArg === "string" ? reasoningArg : extractReasoningFromRaw(raw),
+  };
+}
+
+function createReasoningTracker(flow: ReasoningFlow, input: NormalizedTalkInput): ReasoningTracker {
+  return {
+    flow,
+    conversationId: input.conversationId,
+    userId: input.userId,
+    chunkCount: 0,
+    totalLength: 0,
+    firstChunkIndex: null,
+    firstChunkAt: null,
+    visibleChunkCount: 0,
+    visibleLength: 0,
+    dataEventCount: 0,
+    snippets: [],
+  };
+}
+
+function trackReasoningEvent(
+  tracker: ReasoningTracker,
+  payload: { content: string; reasoning: string }
+): void {
+  tracker.dataEventCount += 1;
+
+  if (payload.content.length > 0) {
+    tracker.visibleChunkCount += 1;
+    tracker.visibleLength += payload.content.length;
+  }
+
+  if (payload.reasoning.length === 0) {
+    return;
+  }
+
+  tracker.chunkCount += 1;
+  tracker.totalLength += payload.reasoning.length;
+
+  if (tracker.firstChunkIndex === null) {
+    tracker.firstChunkIndex = tracker.dataEventCount;
+    tracker.firstChunkAt = Date.now();
+    logger.info("reasoning tracker first chunk", {
+      flow: tracker.flow,
+      conversationId: tracker.conversationId,
+      userId: tracker.userId,
+      firstChunkIndex: tracker.firstChunkIndex,
+      firstChunkLength: payload.reasoning.length,
+    });
+  }
+
+  if (tracker.snippets.length < 3) {
+    tracker.snippets.push(payload.reasoning.slice(0, 120));
+  }
+}
+
+function flushReasoningTracker(tracker: ReasoningTracker, outcome: "end" | "error" | "abort"): void {
+  logger.info("reasoning tracker summary", {
+    flow: tracker.flow,
+    outcome,
+    conversationId: tracker.conversationId,
+    userId: tracker.userId,
+    dataEventCount: tracker.dataEventCount,
+    reasoningChunkCount: tracker.chunkCount,
+    reasoningLength: tracker.totalLength,
+    firstChunkIndex: tracker.firstChunkIndex,
+    firstChunkAt: tracker.firstChunkAt,
+    visibleChunkCount: tracker.visibleChunkCount,
+    visibleLength: tracker.visibleLength,
+    snippets: tracker.snippets,
+  });
 }
 
 function assertLocalMethod(method: unknown, operation: string): void {
@@ -316,8 +447,18 @@ function createHistoryAwareStream(
   const wrapped = new EventEmitter() as LlmStreamEmitter;
   const scope = resolveHistoryScope(input);
   const chunks: string[] = [];
+  const reasoningTracker = createReasoningTracker("stream", input);
+  let reasoningFlushed = false;
   let ended = false;
   let aborted = false;
+
+  const flushTrackerOnce = (outcome: "end" | "error" | "abort"): void => {
+    if (reasoningFlushed) {
+      return;
+    }
+    reasoningFlushed = true;
+    flushReasoningTracker(reasoningTracker, outcome);
+  };
 
   const cleanup = (): void => {
     sourceStream.off("data", onData);
@@ -327,13 +468,16 @@ function createHistoryAwareStream(
   };
 
   const onData = (...args: unknown[]): void => {
-    const chunk = args[0];
-    if (typeof chunk === "string") {
-      chunks.push(chunk);
-    } else if (chunk !== null && chunk !== undefined) {
-      chunks.push(String(chunk));
+    const parsed = parseStreamDataArgs(args);
+    trackReasoningEvent(reasoningTracker, {
+      content: parsed.content,
+      reasoning: parsed.reasoning,
+    });
+
+    if (parsed.content.length > 0) {
+      chunks.push(parsed.content);
+      wrapped.emit("data", parsed.content, parsed.raw, parsed.reasoning || null);
     }
-    wrapped.emit("data", ...args);
   };
 
   const onError = (error: unknown): void => {
@@ -342,6 +486,7 @@ function createHistoryAwareStream(
     }
     ended = true;
     cleanup();
+    flushTrackerOnce("error");
     wrapped.emit("error", error);
   };
 
@@ -352,6 +497,7 @@ function createHistoryAwareStream(
     ended = true;
     aborted = true;
     cleanup();
+    flushTrackerOnce("abort");
     wrapped.emit("abort");
   };
 
@@ -361,6 +507,7 @@ function createHistoryAwareStream(
     }
     ended = true;
     cleanup();
+    flushTrackerOnce("end");
     void appendHistoryMessageSafe(scope, "assistant", chunks.join("")).finally(() => {
       if (!aborted) {
         wrapped.emit("end");
@@ -428,8 +575,23 @@ async function executeNoStream(
   promptMessages?: HistoryPromptMessage[]
 ): Promise<TalkNoStreamResult> {
   const stream = await requestTalkStream(input, promptMessages);
-  const reply = await collectStreamReply(stream);
-  return { reply: normalizeAssistantReply(reply) };
+  const reasoningTracker = createReasoningTracker("nostream", input);
+
+  try {
+    const reply = await collectStreamReply(stream, {
+      onChunk: (chunk) => {
+        trackReasoningEvent(reasoningTracker, {
+          content: chunk.content,
+          reasoning: chunk.reasoning,
+        });
+      },
+    });
+    flushReasoningTracker(reasoningTracker, "end");
+    return { reply: normalizeAssistantReply(reply) };
+  } catch (error) {
+    flushReasoningTracker(reasoningTracker, "error");
+    throw error;
+  }
 }
 
 async function sendDiscordMessage(channelId: string, message: string): Promise<void> {

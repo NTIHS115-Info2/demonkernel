@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "llm-remote-gateway",
-    "version": "1.1.1",
+    "version": "1.2.0",
     "description": "Remote-only OpenAI compatible LLM gateway with stream chat/models/health capabilities.",
     "type": "system",
     "entry": "index.js"

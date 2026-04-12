@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +61,7 @@ type PluginModule = {
   offline(): Promise<void>;
   restart(options: Record<string, unknown>): Promise<void>;
   state(): Promise<{ status: number }>;
+  generateReply(options: Record<string, unknown>): Promise<unknown>;
   send(options: Record<string, unknown>): Promise<unknown>;
 };
 
@@ -66,8 +69,8 @@ let pluginModule: PluginModule | null = null;
 
 async function loadPluginModule(): Promise<PluginModule> {
   vi.resetModules();
-  const imported = await import("../../src/systemPlugins/talk-engine/index");
-  pluginModule = (imported.default ?? imported) as PluginModule;
+  const imported = await import("../../src/systemPlugins/talk-engine/index.js");
+  pluginModule = (imported.default ?? imported) as unknown as PluginModule;
   return pluginModule;
 }
 
@@ -281,7 +284,7 @@ describe("system plugin: talk-engine", () => {
 
     const receivedChunks: string[] = [];
     let ended = false;
-    stream.on("data", (chunk) => {
+    stream.on("data", (chunk: unknown) => {
       receivedChunks.push(String(chunk));
     });
     stream.on("end", () => {
@@ -304,6 +307,44 @@ describe("system plugin: talk-engine", () => {
       role: "assistant",
       content: "stream-reply",
     });
+  });
+
+  it("filters reasoning-only chunks in talk.stream and avoids empty assistant history", async () => {
+    const llmEmitter = createLlmEmitter({
+      rawChunks: [["", { choices: [{ delta: { reasoning_content: "thinking only" } }] }, "thinking only"]],
+    });
+    registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
+      streamChat: vi.fn(async () => llmEmitter),
+    });
+
+    const plugin = await loadPluginModule();
+    await plugin.online({ method: "local", relayEnabled: false });
+
+    const stream = await plugin.send({
+      action: "talk.stream",
+      message: "stream but no visible answer",
+      conversationId: "conv-stream-empty",
+      userId: "user-stream-empty",
+    }) as EventEmitter;
+
+    const receivedChunks: string[] = [];
+    let ended = false;
+    stream.on("data", (chunk: unknown) => {
+      receivedChunks.push(String(chunk));
+    });
+    stream.on("end", () => {
+      ended = true;
+    });
+
+    await waitFor(() => ended);
+    expect(receivedChunks).toEqual([]);
+
+    const appendMethod = registryMock.getProviderMethodMock(CAPABILITY_HISTORY_APPEND, "appendMessage");
+    const assistantCalls = appendMethod.mock.calls.filter((call) => {
+      const payload = call[0] as { role?: string };
+      return payload.role === "assistant";
+    });
+    expect(assistantCalls).toHaveLength(0);
   });
 
   it("runs relay flow: conversation -> typing.start -> llm -> message.send -> typing.stop", async () => {

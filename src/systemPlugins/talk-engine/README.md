@@ -9,10 +9,10 @@
 
 ## 1. 版本與依賴
 
-- plugin version: `0.4.2`
+- plugin version: `0.5.0`
 - capability schema version: `2.1.0`
 - 依賴版本：
-  - `system:llm-remote-gateway@1.1.1`
+  - `system:llm-remote-gateway@1.2.0`
   - `system:discord@0.3.0`
   - `system:conversation-history@1.0.1`
 
@@ -57,6 +57,7 @@
 
 - 先讀 recent history 並寫入當前 user 訊息。
 - 回傳「包裝後」stream emitter（透傳 data/end/error/abort）。
+- 內部會追蹤 reasoning lifecycle（首包/累積長度/片段）作診斷，但對外只輸出可見 content。
 - 只有在 `end` 事件時才寫入 assistant 歷史；`error/abort` 不寫入 assistant。
 
 ## 5. Relay 流程（`relayEnabled=true`）

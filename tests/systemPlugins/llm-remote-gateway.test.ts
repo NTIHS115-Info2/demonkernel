@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { PassThrough } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +27,7 @@ type PluginModule = {
 
 async function loadPluginModule(): Promise<PluginModule> {
   vi.resetModules();
-  const imported = await import("../../src/systemPlugins/llm-remote-gateway/index");
+  const imported = await import("../../src/systemPlugins/llm-remote-gateway/index.js");
   return (imported.default ?? imported) as unknown as PluginModule;
 }
 
@@ -261,13 +263,20 @@ describe("system plugin: llm-remote-gateway", () => {
       messages: [{ role: "user", content: "hi" }],
     }) as ChatStreamEmitter;
 
+    const dataEvents: Array<{ content: string; reasoning: string | null }> = [];
     const error = await new Promise<{ type?: string; message?: string }>((resolve, reject) => {
+      emitter.on("data", (content: string, _raw: unknown, reasoning: string | null) => {
+        dataEvents.push({ content, reasoning });
+      });
       emitter.on("error", (streamError: { type?: string; message?: string }) => resolve(streamError));
       emitter.on("end", () => reject(new Error("stream should not end successfully")));
     });
 
     expect(error.type).toBe("parse_error");
     expect(error.message).toContain("without visible content");
+    expect(dataEvents).toEqual([
+      { content: "", reasoning: "thinking" },
+    ]);
   });
 
   it("retries chat stream request and emits classified timeout error", async () => {

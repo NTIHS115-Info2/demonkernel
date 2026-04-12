@@ -111,6 +111,76 @@ type UpstreamStreamError = {
   details: unknown;
 };
 
+type StreamChunkKind = "content" | "reasoning" | "empty";
+
+type ClassifiedStreamChunk = {
+  kind: StreamChunkKind;
+  content: string;
+  reasoning: string;
+};
+
+type ReasoningDiagnostics = {
+  chunkCount: number;
+  totalLength: number;
+  firstChunkIndex: number | null;
+  snippets: string[];
+};
+
+function createReasoningDiagnostics(): ReasoningDiagnostics {
+  return {
+    chunkCount: 0,
+    totalLength: 0,
+    firstChunkIndex: null,
+    snippets: [],
+  };
+}
+
+function trackReasoningChunk(
+  diagnostics: ReasoningDiagnostics,
+  reasoning: string,
+  chunkIndex: number
+): void {
+  if (reasoning.length === 0) {
+    return;
+  }
+
+  diagnostics.chunkCount += 1;
+  diagnostics.totalLength += reasoning.length;
+  if (diagnostics.firstChunkIndex === null) {
+    diagnostics.firstChunkIndex = chunkIndex;
+  }
+  if (diagnostics.snippets.length < 3) {
+    diagnostics.snippets.push(reasoning.slice(0, 120));
+  }
+}
+
+function classifyStreamChunk(payload: Record<string, unknown>): ClassifiedStreamChunk {
+  const content = extractCompletionContent(payload);
+  const reasoning = extractReasoningContent(payload);
+
+  if (content.length > 0) {
+    return {
+      kind: "content",
+      content,
+      reasoning,
+    };
+  }
+
+  if (reasoning.length > 0) {
+    return {
+      kind: "reasoning",
+      content: "",
+      reasoning,
+    };
+  }
+
+  return {
+    kind: "empty",
+    content: "",
+    reasoning: "",
+  };
+}
+
 function extractUpstreamStreamError(payload: Record<string, unknown>): UpstreamStreamError | null {
   const rawError = payload.error;
   if (rawError === null || rawError === undefined) {
@@ -372,6 +442,9 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
   let retryCount = 0;
   let dataTimeout: NodeJS.Timeout | null = null;
   let hasVisibleContent = false;
+  let sseChunkIndex = 0;
+  const reasoningDiagnostics = createReasoningDiagnostics();
+  let reasoningDiagnosticsFlushed = false;
   const controller = new AbortController();
 
   const clearDataTimeout = (): void => {
@@ -382,6 +455,8 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
   };
 
   const emitTerminalEvent = (): void => {
+    flushReasoningDiagnostics("stream_terminal");
+
     if (hasVisibleContent) {
       emitter.emit("end");
       return;
@@ -394,6 +469,30 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
       phase: "chat-stream-empty-content",
       url,
     }));
+  };
+
+  const flushReasoningDiagnostics = (reason: string): void => {
+    if (reasoningDiagnosticsFlushed) {
+      return;
+    }
+    reasoningDiagnosticsFlushed = true;
+
+    if (reasoningDiagnostics.chunkCount === 0) {
+      logger.info("chat stream reasoning summary", {
+        reason,
+        chunkCount: 0,
+        totalLength: 0,
+      });
+      return;
+    }
+
+    logger.info("chat stream reasoning summary", {
+      reason,
+      chunkCount: reasoningDiagnostics.chunkCount,
+      totalLength: reasoningDiagnostics.totalLength,
+      firstChunkIndex: reasoningDiagnostics.firstChunkIndex,
+      snippets: reasoningDiagnostics.snippets,
+    });
   };
 
   const attemptRequest = async (): Promise<void> => {
@@ -488,6 +587,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
 
           try {
             const parsed = JSON.parse(data) as Record<string, unknown>;
+            sseChunkIndex += 1;
             const upstreamError = extractUpstreamStreamError(parsed);
             if (upstreamError) {
               clearDataTimeout();
@@ -496,6 +596,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
               }
 
               aborted = true;
+              flushReasoningDiagnostics("upstream_error_payload");
               emitter.emit("error", createTypedError({
                 type: "server_error",
                 message: upstreamError.message,
@@ -510,13 +611,24 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
             }
 
             const normalized = normalizeCompletionChunk(parsed);
-            const content = extractCompletionContent(normalized);
-            const reasoning = extractReasoningContent(normalized);
-
-            if (content.length > 0) {
-              hasVisibleContent = true;
-              emitter.emit("data", content, normalized, reasoning || null);
+            const chunk = classifyStreamChunk(normalized);
+            if (chunk.kind === "empty") {
+              continue;
             }
+
+            if (chunk.reasoning.length > 0) {
+              trackReasoningChunk(reasoningDiagnostics, chunk.reasoning, sseChunkIndex);
+            }
+
+            if (chunk.kind === "content") {
+              hasVisibleContent = true;
+              emitter.emit("data", chunk.content, normalized, chunk.reasoning || null);
+              continue;
+            }
+
+            // 中英註解：reasoning-only chunk 保留內部語義，content 仍保持空字串。
+            // EN: reasoning-only chunk stays internal; visible content remains empty.
+            emitter.emit("data", "", normalized, chunk.reasoning || null);
           } catch (error) {
             logger.warn("chat stream chunk parse failed", { error: String(error), data });
           }
@@ -538,6 +650,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
           return;
         }
         aborted = true;
+        flushReasoningDiagnostics("stream_error");
         emitter.emit("error", classifyError(error, {
           reqId,
           phase: "chat-stream",
@@ -566,6 +679,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
       }
 
       aborted = true;
+      flushReasoningDiagnostics("request_error");
       emitter.emit("error", classifyError(error, {
         reqId,
         phase: "chat-request",
@@ -585,6 +699,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
     clearDataTimeout();
     controller.abort();
     stream?.destroy();
+    flushReasoningDiagnostics("abort");
     emitter.emit("abort");
   };
 

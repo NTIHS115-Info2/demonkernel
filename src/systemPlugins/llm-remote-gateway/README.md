@@ -8,7 +8,7 @@
 
 ## 1. 版本與能力契約
 
-- plugin version: `1.1.1`
+- plugin version: `1.2.0`
 - capability schema version: `2.0.0`（provider-first，移除 capability action alias 契約）
 
 ## 2. Online Options（remote）
@@ -58,3 +58,4 @@
 - 錯誤分類：`request_error` / `server_error` / `timeout` / `parse_error`
 - `streamChat` 支援 retry + exponential backoff
 - `listModels`/`checkHealth` 回傳 `ok=false` 結果物件
+- SSE chunk 會分為 `content` / `reasoning` / `error` 三類，`reasoning` 僅做內部診斷與追蹤，不會被視為可見回覆完成條件
