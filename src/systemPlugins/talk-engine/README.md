@@ -9,12 +9,12 @@
 
 ## 1. 版本與依賴
 
-- plugin version: `0.5.0`
+- plugin version: `0.6.0`
 - capability schema version: `2.1.0`
 - 依賴版本：
-  - `system:llm-remote-gateway@1.2.0`
-  - `system:discord@0.3.0`
-  - `system:conversation-history@1.0.1`
+  - `system:llm-remote-gateway@1.3.0`
+  - `system:discord@0.4.0`
+  - `system:conversation-history@1.1.0`
 
 ## 2. Online Options（local）
 

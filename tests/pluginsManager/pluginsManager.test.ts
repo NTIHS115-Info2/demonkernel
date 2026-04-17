@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import defaultCapabilitiesManager, { CapabilitiesManager } from "../../src/core/capabilities";
 import { CapabilityRegistry } from "../../src/core/registry";
@@ -203,6 +203,20 @@ describe("pluginsManager", () => {
         warn: () => undefined,
         error: () => undefined,
       },
+      capabilitiesManager,
+      capabilityRegistry,
+    });
+  }
+
+  function createManagerWithLogger(logger: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  }): PluginsManager {
+    return new PluginsManager({
+      skillPluginsPath: tempRoot.skillPath,
+      systemPluginsPath: tempRoot.systemPath,
+      logger,
       capabilitiesManager,
       capabilityRegistry,
     });
@@ -606,6 +620,44 @@ describe("pluginsManager", () => {
 
     expect(failure).toBeTruthy();
     expect(failure?.reason).toContain("version mismatch");
+  });
+
+  it("emits structured manager/dependency logs during orchestration failure", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "dep",
+      type: "skill",
+      version: "1.0.1",
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "consumer",
+      type: "skill",
+      dependencies: {
+        skill: { dep: "1.0.0" },
+      },
+    });
+
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const manager = createManagerWithLogger(logger);
+    manager.discoverPlugins();
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.failed.some((item) => item.key === "skill:consumer")).toBe(true);
+
+    const infoMetas = logger.info.mock.calls
+      .map((call) => call[1] as { stage?: unknown; action?: unknown } | undefined)
+      .filter((meta): meta is { stage?: unknown; action?: unknown } => Boolean(meta));
+
+    expect(infoMetas.some((meta) => meta.stage === "manager" && meta.action === "online-many.begin")).toBe(true);
+    expect(infoMetas.some((meta) => meta.stage === "manager" && meta.action === "online-many.wave.begin")).toBe(true);
+    expect(infoMetas.some((meta) => meta.stage === "dependency" && meta.action === "evaluate.failed")).toBe(true);
   });
 
   it("captures lifecycle errors from plugin methods", async () => {

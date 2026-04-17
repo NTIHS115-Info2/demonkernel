@@ -6,7 +6,7 @@
 
 ## 1. 版本與定位
 
-- plugin version: `1.0.1`
+- plugin version: `1.1.0`
 - capability schema version: `1.0.0`
 - runtime method: `local`
 - 儲存方式：JSON 檔案 + 記憶體 cache

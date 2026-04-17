@@ -63,6 +63,13 @@ const logger = createKernelLogger("plugin-discord-local", {
   strategy: "local",
 });
 
+function logDiscordInfo(message: string, meta: Record<string, unknown> = {}): void {
+  logger.info(message, {
+    stage: "discord",
+    ...meta,
+  });
+}
+
 const conversationStream = new EventEmitter() as DiscordConversationStream;
 conversationStream.setMaxListeners(0);
 
@@ -220,11 +227,29 @@ function getTypingManager(): TypingSessionManager {
 
 async function handleInboundMessage(message: Message): Promise<void> {
   try {
+    logDiscordInfo("discord inbound message received", {
+      action: "inbound.receive",
+      channelId: message.channel?.id ?? null,
+      guildId: message.guildId ?? null,
+      messageId: message.id,
+      authorId: message.author?.id ?? null,
+      content: message.content,
+    });
     if (message.author.bot) {
+      logDiscordInfo("discord inbound skipped bot message", {
+        action: "inbound.skip",
+        reason: "author_is_bot",
+        messageId: message.id,
+      });
       return;
     }
 
     if (!message.content || message.content.trim().length === 0) {
+      logDiscordInfo("discord inbound skipped empty content", {
+        action: "inbound.skip",
+        reason: "empty_content",
+        messageId: message.id,
+      });
       return;
     }
 
@@ -235,46 +260,90 @@ async function handleInboundMessage(message: Message): Promise<void> {
 
       if (!isOwnerDirectMessage) {
         await replyToNonOwnerDirectMessage(message);
+        logDiscordInfo("discord inbound non-owner dm replied", {
+          action: "inbound.dm.non-owner.reply",
+          messageId: message.id,
+          authorId: message.author.id,
+        });
         return;
       }
 
+      const event = buildConversationEvent(message, "owner_dm", message.content.trim());
       conversationStream.emit(
         "data",
-        buildConversationEvent(message, "owner_dm", message.content.trim())
+        event
       );
+      logDiscordInfo("discord inbound owner dm emitted", {
+        action: "inbound.emit",
+        source: "owner_dm",
+        event,
+      });
       return;
     }
 
     // channelId 僅過濾群組訊息，DM 由 owner 規則處理。
     if (runtime.channelId && message.channel.id !== runtime.channelId) {
+      logDiscordInfo("discord inbound skipped by channel filter", {
+        action: "inbound.skip",
+        reason: "channel_filter",
+        configuredChannelId: runtime.channelId,
+        messageChannelId: message.channel.id,
+      });
       return;
     }
 
     const client = runtime.client;
     const botUserId = client?.user?.id;
     if (!botUserId) {
+      logDiscordInfo("discord inbound skipped bot user unavailable", {
+        action: "inbound.skip",
+        reason: "bot_user_unavailable",
+      });
       return;
     }
 
     if (isReplyToBotMessage(message, botUserId)) {
+      const event = buildConversationEvent(message, "reply", message.content.trim());
       conversationStream.emit(
         "data",
-        buildConversationEvent(message, "reply", message.content.trim())
+        event
       );
+      logDiscordInfo("discord inbound reply emitted", {
+        action: "inbound.emit",
+        source: "reply",
+        event,
+      });
       return;
     }
 
     if (isMentionMessage(message, botUserId)) {
       const cleanedContent = removeMentionFromContent(message.content, botUserId);
       if (!cleanedContent) {
+        logDiscordInfo("discord inbound mention skipped empty cleaned content", {
+          action: "inbound.skip",
+          reason: "mention_cleaned_empty",
+          messageId: message.id,
+        });
         return;
       }
 
+      const event = buildConversationEvent(message, "mention", cleanedContent);
       conversationStream.emit(
         "data",
-        buildConversationEvent(message, "mention", cleanedContent)
+        event
       );
+      logDiscordInfo("discord inbound mention emitted", {
+        action: "inbound.emit",
+        source: "mention",
+        event,
+      });
+      return;
     }
+    logDiscordInfo("discord inbound skipped non-target message", {
+      action: "inbound.skip",
+      reason: "not_mention_or_reply",
+      messageId: message.id,
+    });
   } catch (error) {
     conversationStream.emit("error", error);
     logger.error("discord inbound message handling failed", {
@@ -297,6 +366,11 @@ function resolveAction(options: SendOptions): string {
 }
 
 async function sendMessageInternal(options: SendOptions): Promise<DiscordMessageSendResult> {
+  const beginAt = Date.now();
+  logDiscordInfo("discord sendMessage begin", {
+    action: "message.send.begin",
+    options: isRecord(options) ? options : { value: options },
+  });
   const payload = isRecord(options) ? options : {};
   const message = normalizeOptionalString(payload.message);
   if (!message) {
@@ -325,14 +399,28 @@ async function sendMessageInternal(options: SendOptions): Promise<DiscordMessage
     channel,
     message
   );
-  return {
+  const result = {
     ok: true,
     channelId,
     messageId: typeof sent?.id === "string" ? sent.id : null,
   };
+  logDiscordInfo("discord sendMessage complete", {
+    action: "message.send.complete",
+    channelId,
+    message,
+    result,
+    durationMs: Date.now() - beginAt,
+  });
+  return result;
 }
 
 async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): Promise<DiscordTypingControlResult> {
+  const beginAt = Date.now();
+  logDiscordInfo("discord typing control begin", {
+    action: mode === "start" ? "typing.start.begin" : "typing.stop.begin",
+    mode,
+    options: isRecord(options) ? options : { value: options },
+  });
   const payload = isRecord(options) ? options : {};
   const channelId = normalizeChannelId(payload.channelId) ?? runtime.channelId;
   if (!channelId) {
@@ -341,14 +429,34 @@ async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): 
 
   const manager = getTypingManager();
   if (mode === "start") {
-    return manager.start(channelId);
+    const result = await manager.start(channelId);
+    logDiscordInfo("discord typing control complete", {
+      action: "typing.start.complete",
+      mode,
+      channelId,
+      result,
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   }
 
-  return manager.stop(channelId);
+  const result = await manager.stop(channelId);
+  logDiscordInfo("discord typing control complete", {
+    action: "typing.stop.complete",
+    mode,
+    channelId,
+    result,
+    durationMs: Date.now() - beginAt,
+  });
+  return result;
 }
 
 function openConversationStream(): DiscordConversationStream {
   getRuntimeClient();
+  logDiscordInfo("discord open conversation stream", {
+    action: "conversation.stream.open",
+    result: "ok",
+  });
   return conversationStream;
 }
 
@@ -362,6 +470,11 @@ export default {
   method: METHOD_LOCAL,
 
   async online(options: StrategyOnlineOptions): Promise<void> {
+    const beginAt = Date.now();
+    logDiscordInfo("discord online begin", {
+      action: "online.begin",
+      options,
+    });
     const typedOptions = (isRecord(options) ? options : {}) as LocalOnlineOptions;
     assertLocalMethod(typedOptions.method ?? METHOD_LOCAL, "online");
 
@@ -418,6 +531,14 @@ export default {
         ownerUserId: ownerUserId ?? "unset",
         typingIntervalMs,
       });
+      logDiscordInfo("discord online complete", {
+        action: "online.complete",
+        channelId: channelId ?? "global",
+        ownerUserId: ownerUserId ?? "unset",
+        typingIntervalMs,
+        result: "ok",
+        durationMs: Date.now() - beginAt,
+      });
     } catch (error) {
       await typingSessionManager.clear();
       try {
@@ -426,11 +547,21 @@ export default {
         // ignore cleanup errors
       }
 
+      logDiscordInfo("discord online failed", {
+        action: "online.error",
+        result: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - beginAt,
+      });
       throw error;
     }
   },
 
   async offline(): Promise<void> {
+    const beginAt = Date.now();
+    logDiscordInfo("discord offline begin", {
+      action: "offline.begin",
+    });
     const client = runtime.client;
     const messageListener = runtime.messageListener;
     const typingSessionManager = runtime.typingSessionManager;
@@ -446,6 +577,11 @@ export default {
         messageListener: null,
         typingSessionManager: null,
       };
+      logDiscordInfo("discord offline complete without client", {
+        action: "offline.complete",
+        result: "ok",
+        durationMs: Date.now() - beginAt,
+      });
       return;
     }
 
@@ -467,23 +603,55 @@ export default {
     };
 
     logger.info("discord plugin offline");
+    logDiscordInfo("discord offline complete", {
+      action: "offline.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async restart(options: StrategyRestartOptions): Promise<void> {
+    const beginAt = Date.now();
+    logDiscordInfo("discord restart begin", {
+      action: "restart.begin",
+      options,
+    });
     await this.offline();
     await this.online(options);
     logger.info("discord plugin restarted");
+    logDiscordInfo("discord restart complete", {
+      action: "restart.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async state(): Promise<StateResult> {
+    logDiscordInfo("discord state begin", {
+      action: "state.begin",
+      online: runtime.online,
+      hasClient: Boolean(runtime.client),
+    });
     if (!runtime.client || !runtime.online) {
+      logDiscordInfo("discord state complete", {
+        action: "state.complete",
+        status: 0,
+      });
       return { status: 0 };
     }
 
     if (typeof runtime.client.isReady === "function" && !runtime.client.isReady()) {
+      logDiscordInfo("discord state complete", {
+        action: "state.complete",
+        status: -1,
+      });
       return { status: -1 };
     }
 
+    logDiscordInfo("discord state complete", {
+      action: "state.complete",
+      status: 1,
+    });
     return { status: 1 };
   },
 
@@ -510,6 +678,11 @@ export default {
     getRuntimeClient();
 
     const action = resolveAction(options);
+    logDiscordInfo("discord send route begin", {
+      action: "send.route.begin",
+      route: action,
+      options: isRecord(options) ? options : { value: options },
+    });
     if (action === ACTION_CONVERSATION_STREAM || action === ACTION_CONVERSATION_STREAM_CAPABILITY) {
       return this.openConversationStream();
     }

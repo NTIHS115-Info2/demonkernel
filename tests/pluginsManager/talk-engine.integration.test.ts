@@ -35,7 +35,7 @@ function writeLlmFixturePlugin(basePath: string): void {
   writeJson(path.join(pluginDir, "plugin.manifest.json"), {
     meta: {
       name: "llm-remote-gateway",
-      version: "1.1.0",
+      version: "1.3.0",
       type: "system",
       entry: "index.js",
     },
@@ -124,7 +124,7 @@ function writeDiscordFixturePlugin(basePath: string): void {
   writeJson(path.join(pluginDir, "plugin.manifest.json"), {
     meta: {
       name: "discord",
-      version: "0.3.0",
+      version: "0.4.0",
       type: "system",
       entry: "index.js",
     },
@@ -295,7 +295,7 @@ function writeConversationHistoryFixturePlugin(basePath: string): void {
   writeJson(path.join(pluginDir, "plugin.manifest.json"), {
     meta: {
       name: "conversation-history",
-      version: "1.0.1",
+      version: "1.1.0",
       type: "system",
       entry: "index.js",
     },

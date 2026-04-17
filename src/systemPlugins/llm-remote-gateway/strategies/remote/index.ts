@@ -40,6 +40,13 @@ const logger = createKernelLogger("plugin-llm-remote-gateway-remote", {
   strategy: "remote",
 });
 
+function logGatewayInfo(message: string, meta: Record<string, unknown> = {}): void {
+  logger.info(message, {
+    stage: "llm-remote-gateway",
+    ...meta,
+  });
+}
+
 let runtimeConfig: RuntimeConfig | null = null;
 let online = false;
 
@@ -349,9 +356,15 @@ async function requestModelsList(
   config: RuntimeConfig,
   options: Record<string, unknown> = {}
 ): Promise<ModelsListResult> {
+  const beginAt = Date.now();
   const requestConfig = resolveRequestConfig(config, options);
   const url = buildUrl(requestConfig.baseUrl, OPENAI_PATHS.MODELS);
   const headers = toRequestHeaders(requestConfig, requestConfig.reqId, false);
+  logGatewayInfo("models list request begin", {
+    action: "models.list.begin",
+    url,
+    options,
+  });
 
   try {
     const response = await axios({
@@ -376,24 +389,41 @@ async function requestModelsList(
     }
 
     const modelsRaw = isRecord(raw) && Array.isArray(raw.data) ? raw.data : [];
-    return {
+    const result = {
       ok: true,
       status,
       models: modelsRaw,
       raw,
     };
+    logGatewayInfo("models list request complete", {
+      action: "models.list.complete",
+      result: "ok",
+      status: result.status,
+      modelCount: result.models.length,
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   } catch (error) {
     const classified = classifyError(error, {
       reqId: requestConfig.reqId,
       phase: "models-list",
       url,
     });
-    return buildModelsResultFromStatus(
+    const failed = buildModelsResultFromStatus(
       classified.status ?? 0,
       null,
       classified.message,
       classified.type
     );
+    logGatewayInfo("models list request failed", {
+      action: "models.list.error",
+      result: "failed",
+      status: failed.status,
+      errorType: failed.errorType,
+      message: failed.message,
+      durationMs: Date.now() - beginAt,
+    });
+    return failed;
   }
 }
 
@@ -401,23 +431,44 @@ async function requestHealthCheck(
   config: RuntimeConfig,
   options: Record<string, unknown> = {}
 ): Promise<HealthCheckResult> {
+  const beginAt = Date.now();
+  logGatewayInfo("health check begin", {
+    action: "health.check.begin",
+    options,
+  });
   const models = await requestModelsList(config, options);
   if (models.ok) {
-    return {
+    const result = {
       ok: true,
       status: models.status,
       message: "remote service is healthy",
       raw: models.raw,
     };
+    logGatewayInfo("health check complete", {
+      action: "health.check.complete",
+      result: "ok",
+      status: result.status,
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   }
 
-  return {
+  const failed = {
     ok: false,
     status: models.status,
     message: models.message ?? "remote health check failed",
     errorType: models.errorType,
     raw: models.raw,
   };
+  logGatewayInfo("health check failed", {
+    action: "health.check.error",
+    result: "failed",
+    status: failed.status,
+    errorType: failed.errorType ?? null,
+    message: failed.message,
+    durationMs: Date.now() - beginAt,
+  });
+  return failed;
 }
 
 function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): ChatStreamEmitter {
@@ -436,6 +487,12 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
     tool_choice: input.tool_choice,
     params: isRecord(input.params) ? input.params : {},
   });
+  logGatewayInfo("chat stream payload built", {
+    action: "chat.stream.payload",
+    url,
+    reqId,
+    payload,
+  });
 
   let stream: Readable | null = null;
   let aborted = false;
@@ -443,6 +500,9 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
   let dataTimeout: NodeJS.Timeout | null = null;
   let hasVisibleContent = false;
   let sseChunkIndex = 0;
+  let contentChunkCount = 0;
+  let reasoningOnlyChunkCount = 0;
+  let emptyChunkCount = 0;
   const reasoningDiagnostics = createReasoningDiagnostics();
   let reasoningDiagnosticsFlushed = false;
   const controller = new AbortController();
@@ -456,6 +516,15 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
 
   const emitTerminalEvent = (): void => {
     flushReasoningDiagnostics("stream_terminal");
+    logGatewayInfo("chat stream terminal event", {
+      action: "chat.stream.terminal",
+      reqId,
+      hasVisibleContent,
+      sseChunkIndex,
+      contentChunkCount,
+      reasoningOnlyChunkCount,
+      emptyChunkCount,
+    });
 
     if (hasVisibleContent) {
       emitter.emit("end");
@@ -613,6 +682,7 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
             const normalized = normalizeCompletionChunk(parsed);
             const chunk = classifyStreamChunk(normalized);
             if (chunk.kind === "empty") {
+              emptyChunkCount += 1;
               continue;
             }
 
@@ -622,12 +692,14 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
 
             if (chunk.kind === "content") {
               hasVisibleContent = true;
+              contentChunkCount += 1;
               emitter.emit("data", chunk.content, normalized, chunk.reasoning || null);
               continue;
             }
 
             // 中英註解：reasoning-only chunk 保留內部語義，content 仍保持空字串。
             // EN: reasoning-only chunk stays internal; visible content remains empty.
+            reasoningOnlyChunkCount += 1;
             emitter.emit("data", "", normalized, chunk.reasoning || null);
           } catch (error) {
             logger.warn("chat stream chunk parse failed", { error: String(error), data });
@@ -641,6 +713,14 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
           return;
         }
         aborted = true;
+        logGatewayInfo("chat stream end event", {
+          action: "chat.stream.end-event",
+          reqId,
+          sseChunkIndex,
+          contentChunkCount,
+          reasoningOnlyChunkCount,
+          emptyChunkCount,
+        });
         emitTerminalEvent();
       });
 
@@ -651,6 +731,15 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
         }
         aborted = true;
         flushReasoningDiagnostics("stream_error");
+        logGatewayInfo("chat stream error event", {
+          action: "chat.stream.error-event",
+          reqId,
+          sseChunkIndex,
+          contentChunkCount,
+          reasoningOnlyChunkCount,
+          emptyChunkCount,
+          error: error instanceof Error ? error.message : String(error),
+        });
         emitter.emit("error", classifyError(error, {
           reqId,
           phase: "chat-stream",
@@ -680,6 +769,16 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
 
       aborted = true;
       flushReasoningDiagnostics("request_error");
+      logGatewayInfo("chat stream request failed", {
+        action: "chat.stream.error",
+        reqId,
+        retryCount,
+        sseChunkIndex,
+        contentChunkCount,
+        reasoningOnlyChunkCount,
+        emptyChunkCount,
+        error: error instanceof Error ? error.message : String(error),
+      });
       emitter.emit("error", classifyError(error, {
         reqId,
         phase: "chat-request",
@@ -700,6 +799,15 @@ function createChatEmitter(config: RuntimeConfig, input: ChatStreamSendInput): C
     controller.abort();
     stream?.destroy();
     flushReasoningDiagnostics("abort");
+    logGatewayInfo("chat stream abort invoked", {
+      action: "chat.stream.abort",
+      reqId,
+      retryCount,
+      sseChunkIndex,
+      contentChunkCount,
+      reasoningOnlyChunkCount,
+      emptyChunkCount,
+    });
     emitter.emit("abort");
   };
 
@@ -710,24 +818,55 @@ export default {
   method: METHOD_REMOTE,
 
   async online(options: StrategyOnlineOptions): Promise<void> {
+    const beginAt = Date.now();
+    logGatewayInfo("llm-remote-gateway online begin", {
+      action: "online.begin",
+      options,
+    });
     runtimeConfig = resolveOnlineConfig(options);
     online = true;
     logger.info("llm-remote-gateway online", {
       baseUrl: runtimeConfig.baseUrl,
       model: runtimeConfig.model,
     });
+    logGatewayInfo("llm-remote-gateway online complete", {
+      action: "online.complete",
+      result: "ok",
+      baseUrl: runtimeConfig.baseUrl,
+      model: runtimeConfig.model,
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async offline(): Promise<void> {
+    const beginAt = Date.now();
+    logGatewayInfo("llm-remote-gateway offline begin", {
+      action: "offline.begin",
+    });
     runtimeConfig = null;
     online = false;
     logger.info("llm-remote-gateway offline");
+    logGatewayInfo("llm-remote-gateway offline complete", {
+      action: "offline.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async restart(options: StrategyRestartOptions): Promise<void> {
+    const beginAt = Date.now();
+    logGatewayInfo("llm-remote-gateway restart begin", {
+      action: "restart.begin",
+      options,
+    });
     await this.offline();
     await this.online(options);
     logger.info("llm-remote-gateway restarted");
+    logGatewayInfo("llm-remote-gateway restart complete", {
+      action: "restart.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async state(): Promise<StateResult> {
@@ -749,7 +888,17 @@ export default {
       throw new Error("remote strategy is not online");
     }
 
-    return createChatEmitter(runtimeConfig, normalizeChatInput(input));
+    const normalized = normalizeChatInput(input);
+    logGatewayInfo("streamChat begin", {
+      action: "stream-chat.begin",
+      input: normalized,
+    });
+    const emitter = createChatEmitter(runtimeConfig, normalized);
+    logGatewayInfo("streamChat emitter created", {
+      action: "stream-chat.complete",
+      result: "ok",
+    });
+    return emitter;
   },
 
   async listModels(input: Record<string, unknown> = {}): Promise<ModelsListResult> {
@@ -757,7 +906,20 @@ export default {
       throw new Error("remote strategy is not online");
     }
 
-    return requestModelsList(runtimeConfig, isRecord(input) ? input : {});
+    logGatewayInfo("listModels begin", {
+      action: "list-models.begin",
+      input,
+    });
+    const result = await requestModelsList(runtimeConfig, isRecord(input) ? input : {});
+    logGatewayInfo("listModels complete", {
+      action: "list-models.complete",
+      result: result.ok ? "ok" : "failed",
+      status: result.status,
+      modelCount: result.models.length,
+      errorType: result.errorType ?? null,
+      message: result.message ?? null,
+    });
+    return result;
   },
 
   async checkHealth(input: Record<string, unknown> = {}): Promise<HealthCheckResult> {
@@ -765,7 +927,19 @@ export default {
       throw new Error("remote strategy is not online");
     }
 
-    return requestHealthCheck(runtimeConfig, isRecord(input) ? input : {});
+    logGatewayInfo("checkHealth begin", {
+      action: "check-health.begin",
+      input,
+    });
+    const result = await requestHealthCheck(runtimeConfig, isRecord(input) ? input : {});
+    logGatewayInfo("checkHealth complete", {
+      action: "check-health.complete",
+      result: result.ok ? "ok" : "failed",
+      status: result.status,
+      errorType: result.errorType ?? null,
+      message: result.message,
+    });
+    return result;
   },
 
   async send(options: SendOptions): Promise<unknown> {
@@ -774,6 +948,11 @@ export default {
     }
 
     const action = resolveAction(options as RemoteSendOptions);
+    logGatewayInfo("send route begin", {
+      action: "send.route.begin",
+      route: action,
+      options: isRecord(options) ? options : { value: options },
+    });
 
     switch (action) {
       case "chat.stream":

@@ -6,10 +6,22 @@ import type {
   DependencyGraphAnalysis,
   DependencyRef,
   DependencyStatus,
+  ManagerLogger,
   PluginDescriptor,
   PluginKey,
   PluginRuntime,
 } from "./types";
+
+function logDependency(
+  logger: ManagerLogger | undefined,
+  message: string,
+  meta: Record<string, unknown>
+): void {
+  logger?.info(message, {
+    stage: "dependency",
+    ...meta,
+  });
+}
 
 function depKey(type: PluginType, name: string): PluginKey {
   return `${type}:${name}`;
@@ -93,9 +105,19 @@ function getCyclesFromComponents(params: {
 
 export function analyzeDependencyGraph(
   pendingKeys: Set<PluginKey>,
-  registry: Map<PluginKey, PluginDescriptor>
+  registry: Map<PluginKey, PluginDescriptor>,
+  logger?: ManagerLogger
 ): DependencyGraphAnalysis {
+  logDependency(logger, "dependency graph analysis begin", {
+    action: "graph.begin",
+    pendingCount: pendingKeys.size,
+    pendingKeys: Array.from(pendingKeys),
+  });
   const adjacency = buildPendingAdjacency({ pendingKeys, registry });
+  logDependency(logger, "dependency graph adjacency built", {
+    action: "graph.adjacency",
+    adjacency: Array.from(adjacency.entries()).map(([key, deps]) => ({ key, deps })),
+  });
   const visited = new Set<PluginKey>();
   const order: PluginKey[] = [];
 
@@ -183,6 +205,13 @@ export function analyzeDependencyGraph(
   }
 
   const cycles = getCyclesFromComponents({ components, adjacency });
+  logDependency(logger, "dependency graph analysis complete", {
+    action: "graph.complete",
+    componentCount: components.length,
+    components,
+    cycleCount: cycles.length,
+    cycles,
+  });
 
   return {
     cycles,
@@ -197,13 +226,35 @@ export function evaluateDependencyStatus(params: {
   requestedKeys: Set<PluginKey>;
   failedKeys: Set<PluginKey>;
   componentByKey: DependencyComponentMap;
+  logger?: ManagerLogger;
 }): DependencyStatus {
-  const { descriptor, registry, runtime, requestedKeys, failedKeys, componentByKey } = params;
+  const {
+    descriptor,
+    registry,
+    runtime,
+    requestedKeys,
+    failedKeys,
+    componentByKey,
+    logger,
+  } = params;
 
   for (const dep of getDependencyRefs(descriptor)) {
+    logDependency(logger, "dependency check begin", {
+      action: "evaluate.check",
+      pluginKey: descriptor.key,
+      dependencyKey: dep.dependencyKey,
+      expectedVersion: dep.expectedVersion,
+    });
     const dependency = registry.get(dep.dependencyKey);
 
     if (!dependency) {
+      logDependency(logger, "dependency check failed: missing dependency", {
+        action: "evaluate.failed",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        result: "failed",
+        reason: "dependency_not_found",
+      });
       return {
         kind: "failed",
         reason: `dependency not found: ${dep.dependencyKey}`,
@@ -211,6 +262,15 @@ export function evaluateDependencyStatus(params: {
     }
 
     if (dependency.version !== dep.expectedVersion) {
+      logDependency(logger, "dependency check failed: version mismatch", {
+        action: "evaluate.failed",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        expectedVersion: dep.expectedVersion,
+        actualVersion: dependency.version,
+        result: "failed",
+        reason: "version_mismatch",
+      });
       return {
         kind: "failed",
         reason: `dependency version mismatch for ${dep.dependencyKey}: expected ${dep.expectedVersion}, got ${dependency.version}`,
@@ -219,10 +279,24 @@ export function evaluateDependencyStatus(params: {
 
     const dependencyRuntime = runtime.get(dep.dependencyKey);
     if (dependencyRuntime?.state === "online") {
+      logDependency(logger, "dependency check satisfied by online runtime", {
+        action: "evaluate.check",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        dependencyState: dependencyRuntime.state,
+        result: "satisfied",
+      });
       continue;
     }
 
     if (failedKeys.has(dep.dependencyKey)) {
+      logDependency(logger, "dependency check failed: dependency already failed", {
+        action: "evaluate.failed",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        result: "failed",
+        reason: "dependency_failed",
+      });
       return {
         kind: "failed",
         reason: `dependency failed: ${dep.dependencyKey}`,
@@ -230,6 +304,13 @@ export function evaluateDependencyStatus(params: {
     }
 
     if (!requestedKeys.has(dep.dependencyKey)) {
+      logDependency(logger, "dependency check failed: dependency not in queue", {
+        action: "evaluate.failed",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        result: "failed",
+        reason: "dependency_offline_not_queued",
+      });
       return {
         kind: "failed",
         reason: `dependency ${dep.dependencyKey} is offline and not in startup queue`,
@@ -242,19 +323,46 @@ export function evaluateDependencyStatus(params: {
 
     if (inSameComponent) {
       if (dependency.startupWeight > descriptor.startupWeight) {
+        logDependency(logger, "dependency check waiting in same component", {
+          action: "evaluate.waiting",
+          pluginKey: descriptor.key,
+          dependencyKey: dep.dependencyKey,
+          ownerWeight: descriptor.startupWeight,
+          dependencyWeight: dependency.startupWeight,
+          result: "waiting",
+        });
         return {
           kind: "waiting",
           dependencyKey: dep.dependencyKey,
         };
       }
+      logDependency(logger, "dependency check satisfied in same component", {
+        action: "evaluate.check",
+        pluginKey: descriptor.key,
+        dependencyKey: dep.dependencyKey,
+        ownerWeight: descriptor.startupWeight,
+        dependencyWeight: dependency.startupWeight,
+        result: "satisfied",
+      });
       continue;
     }
 
+    logDependency(logger, "dependency check waiting for external component", {
+      action: "evaluate.waiting",
+      pluginKey: descriptor.key,
+      dependencyKey: dep.dependencyKey,
+      result: "waiting",
+    });
     return {
       kind: "waiting",
       dependencyKey: dep.dependencyKey,
     };
   }
 
+  logDependency(logger, "dependency check satisfied", {
+    action: "evaluate.complete",
+    pluginKey: descriptor.key,
+    result: "satisfied",
+  });
   return { kind: "satisfied" };
 }

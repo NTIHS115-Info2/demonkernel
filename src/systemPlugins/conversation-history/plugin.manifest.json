@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "conversation-history",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "Conversation context/transcript store for appending, querying recent messages, and clearing history.",
     "type": "system",
     "entry": "index.js"

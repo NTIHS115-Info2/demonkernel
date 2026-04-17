@@ -57,6 +57,13 @@ const logger = createKernelLogger("plugin-talk-engine-local", {
   strategy: "local",
 });
 
+function logTalkInfo(message: string, meta: Record<string, unknown> = {}): void {
+  logger.info(message, {
+    stage: "talk-engine",
+    ...meta,
+  });
+}
+
 let runtime: LocalRuntime = {
   online: false,
   relay: {
@@ -84,6 +91,28 @@ type ReasoningTracker = {
   dataEventCount: number;
   snippets: string[];
 };
+
+function summarizeNormalizedInput(input: NormalizedTalkInput): Record<string, unknown> {
+  return {
+    action: input.action,
+    message: input.message,
+    talker: input.talker,
+    conversationId: input.conversationId,
+    userId: input.userId,
+    historyLimit: input.historyLimit,
+    model: input.model ?? null,
+    toolCount: Array.isArray(input.tools) ? input.tools.length : 0,
+    toolChoice: input.toolChoice ?? null,
+    params: input.params,
+    timeoutMs: input.timeoutMs ?? null,
+    connectionTimeoutMs: input.connectionTimeoutMs ?? null,
+    maxRetries: input.maxRetries ?? null,
+    retryDelayBaseMs: input.retryDelayBaseMs ?? null,
+    reqId: input.reqId ?? null,
+    reqIdHeader: input.reqIdHeader ?? null,
+    headers: input.headers ?? null,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -246,7 +275,17 @@ function ensureOnline(): void {
 }
 
 function resolveProvider(capabilityId: string): unknown {
-  return capabilityRegistry.resolve(capabilityId);
+  logTalkInfo("resolve provider begin", {
+    action: "provider.resolve.begin",
+    capabilityId,
+  });
+  const provider = capabilityRegistry.resolve(capabilityId);
+  logTalkInfo("resolve provider complete", {
+    action: "provider.resolve.complete",
+    capabilityId,
+    result: "ok",
+  });
+  return provider;
 }
 
 function resolveLlmProvider(): LlmChatStreamProvider {
@@ -334,14 +373,29 @@ function resolveHistoryScope(input: NormalizedTalkInput): TalkHistoryScope | nul
   }
 
   if (!scope.conversationId && !scope.userId) {
+    logTalkInfo("resolve history scope skipped", {
+      action: "history.scope.resolve",
+      result: "none",
+    });
     return null;
   }
 
+  logTalkInfo("resolve history scope complete", {
+    action: "history.scope.resolve",
+    result: "ok",
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+  });
   return scope;
 }
 
 function getHistoryLimit(input: NormalizedTalkInput): number {
-  return input.historyLimit ?? DEFAULT_HISTORY_LIMIT;
+  const limit = input.historyLimit ?? DEFAULT_HISTORY_LIMIT;
+  logTalkInfo("resolve history limit", {
+    action: "history.limit.resolve",
+    historyLimit: limit,
+  });
+  return limit;
 }
 
 async function loadHistoryForPrompt(input: NormalizedTalkInput): Promise<HistoryPromptMessage[]> {
@@ -352,8 +406,22 @@ async function loadHistoryForPrompt(input: NormalizedTalkInput): Promise<History
 
   const provider = resolveHistoryRecentProvider();
   const limit = getHistoryLimit(input);
+  const beginAt = Date.now();
+  logTalkInfo("history recent load begin", {
+    action: "history.load.begin",
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+    historyLimit: limit,
+  });
   const loaded = await provider.getRecentMessages(scope, limit);
   if (!Array.isArray(loaded)) {
+    logTalkInfo("history recent load returned non-array; fallback empty", {
+      action: "history.load.complete",
+      conversationId: scope.conversationId ?? null,
+      userId: scope.userId ?? null,
+      result: "non-array",
+      durationMs: Date.now() - beginAt,
+    });
     return [];
   }
 
@@ -381,6 +449,15 @@ async function loadHistoryForPrompt(input: NormalizedTalkInput): Promise<History
     }
   }
 
+  logTalkInfo("history recent load complete", {
+    action: "history.load.complete",
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+    result: "ok",
+    loadedCount: loaded.length,
+    normalizedCount: historyMessages.length,
+    durationMs: Date.now() - beginAt,
+  });
   return historyMessages;
 }
 
@@ -390,14 +467,37 @@ async function appendHistoryMessage(
   content: string
 ): Promise<void> {
   if (!scope || content.length === 0) {
+    logTalkInfo("history append skipped", {
+      action: "history.append.skip",
+      conversationId: scope?.conversationId ?? null,
+      userId: scope?.userId ?? null,
+      role,
+      contentLength: content.length,
+    });
     return;
   }
 
   const provider = resolveHistoryAppendProvider();
+  const beginAt = Date.now();
+  logTalkInfo("history append begin", {
+    action: "history.append.begin",
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+    role,
+    content,
+  });
   await provider.appendMessage({
     ...scope,
     role,
     content,
+  });
+  logTalkInfo("history append complete", {
+    action: "history.append.complete",
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+    role,
+    result: "ok",
+    durationMs: Date.now() - beginAt,
   });
 }
 
@@ -414,6 +514,12 @@ async function loadHistoryForPromptSafe(input: NormalizedTalkInput): Promise<His
       conversationId: scope.conversationId,
       userId: scope.userId,
       error: error instanceof Error ? error.message : String(error),
+    });
+    logTalkInfo("history recent load safe fallback", {
+      action: "history.load.safe-fallback",
+      conversationId: scope.conversationId ?? null,
+      userId: scope.userId ?? null,
+      result: "fallback-empty",
     });
     return [];
   }
@@ -437,6 +543,13 @@ async function appendHistoryMessageSafe(
       role,
       error: error instanceof Error ? error.message : String(error),
     });
+    logTalkInfo("history append safe fallback", {
+      action: "history.append.safe-fallback",
+      conversationId: scope.conversationId ?? null,
+      userId: scope.userId ?? null,
+      role,
+      result: "ignored",
+    });
   }
 }
 
@@ -444,6 +557,10 @@ function createHistoryAwareStream(
   sourceStream: LlmStreamEmitter,
   input: NormalizedTalkInput
 ): LlmStreamEmitter {
+  logTalkInfo("create history aware stream begin", {
+    action: "stream.wrap.begin",
+    input: summarizeNormalizedInput(input),
+  });
   const wrapped = new EventEmitter() as LlmStreamEmitter;
   const scope = resolveHistoryScope(input);
   const chunks: string[] = [];
@@ -476,6 +593,14 @@ function createHistoryAwareStream(
 
     if (parsed.content.length > 0) {
       chunks.push(parsed.content);
+      logTalkInfo("stream wrapped data", {
+        action: "stream.wrap.data",
+        conversationId: input.conversationId,
+        userId: input.userId,
+        chunk: parsed.content,
+        chunkLength: parsed.content.length,
+        reasoningLength: parsed.reasoning.length,
+      });
       wrapped.emit("data", parsed.content, parsed.raw, parsed.reasoning || null);
     }
   };
@@ -487,6 +612,13 @@ function createHistoryAwareStream(
     ended = true;
     cleanup();
     flushTrackerOnce("error");
+    logTalkInfo("stream wrapped error", {
+      action: "stream.wrap.error",
+      conversationId: input.conversationId,
+      userId: input.userId,
+      error: error instanceof Error ? error.message : String(error),
+      collectedChunkCount: chunks.length,
+    });
     wrapped.emit("error", error);
   };
 
@@ -498,6 +630,12 @@ function createHistoryAwareStream(
     aborted = true;
     cleanup();
     flushTrackerOnce("abort");
+    logTalkInfo("stream wrapped abort", {
+      action: "stream.wrap.abort",
+      conversationId: input.conversationId,
+      userId: input.userId,
+      collectedChunkCount: chunks.length,
+    });
     wrapped.emit("abort");
   };
 
@@ -508,6 +646,13 @@ function createHistoryAwareStream(
     ended = true;
     cleanup();
     flushTrackerOnce("end");
+    logTalkInfo("stream wrapped end", {
+      action: "stream.wrap.end",
+      conversationId: input.conversationId,
+      userId: input.userId,
+      collectedChunkCount: chunks.length,
+      collectedContent: chunks.join(""),
+    });
     void appendHistoryMessageSafe(scope, "assistant", chunks.join("")).finally(() => {
       if (!aborted) {
         wrapped.emit("end");
@@ -522,6 +667,11 @@ function createHistoryAwareStream(
 
   wrapped.abort = (): void => {
     if (sourceStream.abort) {
+      logTalkInfo("stream wrapped abort forwarded", {
+        action: "stream.wrap.abort.forward",
+        conversationId: input.conversationId,
+        userId: input.userId,
+      });
       sourceStream.abort();
       return;
     }
@@ -533,23 +683,60 @@ function createHistoryAwareStream(
 }
 
 async function executeNoStreamWithHistory(input: NormalizedTalkInput): Promise<TalkNoStreamResult> {
+  const beginAt = Date.now();
+  logTalkInfo("nostream with history begin", {
+    action: "nostream-with-history.begin",
+    input: summarizeNormalizedInput(input),
+  });
   const scope = resolveHistoryScope(input);
   const historyMessages = await loadHistoryForPromptSafe(input);
   const userContent = composePromptContent(input);
+  logTalkInfo("nostream prompt prepared", {
+    action: "nostream-with-history.prompt",
+    conversationId: scope?.conversationId ?? null,
+    userId: scope?.userId ?? null,
+    userContent,
+    historyCount: historyMessages.length,
+  });
   await appendHistoryMessageSafe(scope, "user", userContent);
 
   const response = await executeNoStream(input, historyMessages);
   await appendHistoryMessageSafe(scope, "assistant", response.reply);
+  logTalkInfo("nostream with history complete", {
+    action: "nostream-with-history.complete",
+    conversationId: scope?.conversationId ?? null,
+    userId: scope?.userId ?? null,
+    reply: response.reply,
+    durationMs: Date.now() - beginAt,
+  });
   return response;
 }
 
 async function requestStreamWithHistory(input: NormalizedTalkInput): Promise<LlmStreamEmitter> {
+  const beginAt = Date.now();
+  logTalkInfo("stream with history begin", {
+    action: "stream-with-history.begin",
+    input: summarizeNormalizedInput(input),
+  });
   const scope = resolveHistoryScope(input);
   const historyMessages = await loadHistoryForPromptSafe(input);
   const userContent = composePromptContent(input);
+  logTalkInfo("stream prompt prepared", {
+    action: "stream-with-history.prompt",
+    conversationId: scope?.conversationId ?? null,
+    userId: scope?.userId ?? null,
+    userContent,
+    historyCount: historyMessages.length,
+  });
   await appendHistoryMessageSafe(scope, "user", userContent);
 
   const source = await requestTalkStream(input, historyMessages);
+  logTalkInfo("stream with history source ready", {
+    action: "stream-with-history.source",
+    conversationId: scope?.conversationId ?? null,
+    userId: scope?.userId ?? null,
+    durationMs: Date.now() - beginAt,
+  });
   return createHistoryAwareStream(source, input);
 }
 
@@ -557,6 +744,12 @@ async function requestTalkStream(
   input: NormalizedTalkInput,
   promptMessages?: HistoryPromptMessage[]
 ): Promise<LlmStreamEmitter> {
+  const beginAt = Date.now();
+  logTalkInfo("request talk stream begin", {
+    action: "request-talk-stream.begin",
+    input: summarizeNormalizedInput(input),
+    promptMessagesCount: promptMessages?.length ?? 0,
+  });
   const llmProvider = resolveLlmProvider();
   const payload = buildGatewayPayload(
     input,
@@ -566,7 +759,16 @@ async function requestTalkStream(
       historyMessages: promptMessages,
     })
   );
+  logTalkInfo("request talk stream payload built", {
+    action: "request-talk-stream.payload",
+    payload,
+  });
   const stream = await llmProvider.streamChat(payload);
+  logTalkInfo("request talk stream complete", {
+    action: "request-talk-stream.complete",
+    durationMs: Date.now() - beginAt,
+    result: "ok",
+  });
   return assertLlmStream(stream);
 }
 
@@ -574,6 +776,12 @@ async function executeNoStream(
   input: NormalizedTalkInput,
   promptMessages?: HistoryPromptMessage[]
 ): Promise<TalkNoStreamResult> {
+  const beginAt = Date.now();
+  logTalkInfo("execute nostream begin", {
+    action: "execute-nostream.begin",
+    input: summarizeNormalizedInput(input),
+    promptMessagesCount: promptMessages?.length ?? 0,
+  });
   const stream = await requestTalkStream(input, promptMessages);
   const reasoningTracker = createReasoningTracker("nostream", input);
 
@@ -587,36 +795,82 @@ async function executeNoStream(
       },
     });
     flushReasoningTracker(reasoningTracker, "end");
-    return { reply: normalizeAssistantReply(reply) };
+    const normalizedReply = normalizeAssistantReply(reply);
+    logTalkInfo("execute nostream complete", {
+      action: "execute-nostream.complete",
+      reply: normalizedReply,
+      durationMs: Date.now() - beginAt,
+      result: "ok",
+    });
+    return { reply: normalizedReply };
   } catch (error) {
     flushReasoningTracker(reasoningTracker, "error");
+    logTalkInfo("execute nostream failed", {
+      action: "execute-nostream.error",
+      durationMs: Date.now() - beginAt,
+      result: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }
 
 async function sendDiscordMessage(channelId: string, message: string): Promise<void> {
+  logTalkInfo("relay send message begin", {
+    action: "relay.send.begin",
+    channelId,
+    message,
+  });
   const provider = resolveDiscordSendProvider();
   await provider.sendMessage({
     channelId,
     message,
   });
+  logTalkInfo("relay send message complete", {
+    action: "relay.send.complete",
+    channelId,
+    result: "ok",
+  });
 }
 
 async function startDiscordTyping(channelId: string): Promise<void> {
+  logTalkInfo("relay typing start begin", {
+    action: "relay.typing-start.begin",
+    channelId,
+  });
   const provider = resolveDiscordTypingStartProvider();
   await provider.startTyping({
     channelId,
   });
+  logTalkInfo("relay typing start complete", {
+    action: "relay.typing-start.complete",
+    channelId,
+    result: "ok",
+  });
 }
 
 async function stopDiscordTyping(channelId: string): Promise<void> {
+  logTalkInfo("relay typing stop begin", {
+    action: "relay.typing-stop.begin",
+    channelId,
+  });
   const provider = resolveDiscordTypingStopProvider();
   await provider.stopTyping({
     channelId,
   });
+  logTalkInfo("relay typing stop complete", {
+    action: "relay.typing-stop.complete",
+    channelId,
+    result: "ok",
+  });
 }
 
 async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> {
+  const beginAt = Date.now();
+  logTalkInfo("relay event begin", {
+    action: "relay.event.begin",
+    event,
+  });
   if (!event || typeof event !== "object") {
     return;
   }
@@ -644,12 +898,23 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
     historyLimit: DEFAULT_HISTORY_LIMIT,
     params: {},
   };
+  logTalkInfo("relay input normalized", {
+    action: "relay.event.normalized-input",
+    input: summarizeNormalizedInput(normalizedInput),
+  });
 
   await startDiscordTyping(channelId);
 
   try {
     const response = await executeNoStreamWithHistory(normalizedInput);
     await sendDiscordMessage(channelId, response.reply);
+    logTalkInfo("relay event complete", {
+      action: "relay.event.complete",
+      channelId,
+      result: "ok",
+      reply: response.reply,
+      durationMs: Date.now() - beginAt,
+    });
   } catch (error) {
     logger.error("relay event processing failed", {
       channelId,
@@ -659,6 +924,12 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
     try {
       await sendDiscordMessage(channelId, runtime.relay.errorReply);
       await appendHistoryMessageSafe(resolveHistoryScope(normalizedInput), "assistant", runtime.relay.errorReply);
+      logTalkInfo("relay event fallback complete", {
+        action: "relay.event.fallback",
+        channelId,
+        result: "ok",
+        fallbackReply: runtime.relay.errorReply,
+      });
     } catch (sendError) {
       logger.error("relay fallback reply failed", {
         channelId,
@@ -674,15 +945,25 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    logTalkInfo("relay event finalize", {
+      action: "relay.event.finalize",
+      channelId,
+      durationMs: Date.now() - beginAt,
+    });
   }
 }
 
 async function setupRelay(): Promise<void> {
+  const beginAt = Date.now();
+  logTalkInfo("setup relay begin", {
+    action: "relay.setup.begin",
+  });
   const streamProvider = resolveDiscordConversationProvider();
   const streamResult = await streamProvider.openConversationStream();
   const stream = assertDiscordConversationStream(streamResult);
 
   const relayQueue = new RelayQueue<DiscordConversationEvent>({
+    logger,
     handler: handleRelayEvent,
     onError: (event, error) => {
       logger.error("relay queue handler failed", {
@@ -709,9 +990,18 @@ async function setupRelay(): Promise<void> {
   runtime.relay.dataListener = dataListener;
   runtime.relay.errorListener = errorListener;
   runtime.relayQueue = relayQueue;
+  logTalkInfo("setup relay complete", {
+    action: "relay.setup.complete",
+    result: "ok",
+    durationMs: Date.now() - beginAt,
+  });
 }
 
 async function teardownRelay(): Promise<void> {
+  const beginAt = Date.now();
+  logTalkInfo("teardown relay begin", {
+    action: "relay.teardown.begin",
+  });
   const stream = runtime.relay.stream;
   const dataListener = runtime.relay.dataListener;
   const errorListener = runtime.relay.errorListener;
@@ -731,25 +1021,43 @@ async function teardownRelay(): Promise<void> {
     await runtime.relayQueue.stop();
     runtime.relayQueue = null;
   }
+  logTalkInfo("teardown relay complete", {
+    action: "relay.teardown.complete",
+    result: "ok",
+    durationMs: Date.now() - beginAt,
+  });
 }
 
 function resolveOnlineConfig(options: StrategyOnlineOptions): { relayEnabled: boolean; relayErrorReply: string } {
   const typed = (isRecord(options) ? options : {}) as TalkOnlineOptions;
 
-  return {
+  const config = {
     relayEnabled: normalizeBoolean(typed.relayEnabled, DEFAULT_RELAY_ENABLED),
     relayErrorReply: normalizeOptionalString(typed.relayErrorReply) ?? DEFAULT_RELAY_ERROR_REPLY,
   };
+  logTalkInfo("resolve online config complete", {
+    action: "online-config.resolve",
+    config,
+  });
+  return config;
 }
 
 export default {
   method: METHOD_LOCAL,
 
   async online(options: StrategyOnlineOptions): Promise<void> {
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine online begin", {
+      action: "online.begin",
+      options,
+    });
     const typedOptions = (isRecord(options) ? options : {}) as TalkOnlineOptions;
     assertLocalMethod(typedOptions.method ?? METHOD_LOCAL, "online");
 
     if (runtime.online) {
+      logTalkInfo("talk-engine online found existing runtime, running offline first", {
+        action: "online.pre-offline",
+      });
       await this.offline();
     }
 
@@ -766,13 +1074,29 @@ export default {
       logger.info("talk-engine online", {
         relayEnabled: runtime.relay.enabled,
       });
+      logTalkInfo("talk-engine online complete", {
+        action: "online.complete",
+        result: "ok",
+        relayEnabled: runtime.relay.enabled,
+        durationMs: Date.now() - beginAt,
+      });
     } catch (error) {
+      logTalkInfo("talk-engine online failed", {
+        action: "online.error",
+        result: "failed",
+        durationMs: Date.now() - beginAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
       await this.offline();
       throw error;
     }
   },
 
   async offline(): Promise<void> {
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine offline begin", {
+      action: "offline.begin",
+    });
     await teardownRelay();
 
     runtime.online = false;
@@ -780,51 +1104,134 @@ export default {
     runtime.relay.errorReply = DEFAULT_RELAY_ERROR_REPLY;
 
     logger.info("talk-engine offline");
+    logTalkInfo("talk-engine offline complete", {
+      action: "offline.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async restart(options: StrategyRestartOptions): Promise<void> {
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine restart begin", {
+      action: "restart.begin",
+      options,
+    });
     await this.offline();
     await this.online(options);
     logger.info("talk-engine restarted");
+    logTalkInfo("talk-engine restart complete", {
+      action: "restart.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async state(): Promise<StateResult> {
+    logTalkInfo("talk-engine state begin", {
+      action: "state.begin",
+      online: runtime.online,
+      relayEnabled: runtime.relay.enabled,
+      hasRelayQueue: Boolean(runtime.relayQueue),
+    });
     if (!runtime.online) {
+      logTalkInfo("talk-engine state complete", {
+        action: "state.complete",
+        status: 0,
+      });
       return { status: 0 };
     }
+    logTalkInfo("talk-engine state complete", {
+      action: "state.complete",
+      status: 1,
+    });
     return { status: 1 };
   },
 
   async send(options: SendOptions): Promise<unknown> {
     ensureOnline();
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine send begin", {
+      action: "send.begin",
+      options: isRecord(options) ? options : { value: options },
+    });
 
     const input = normalizeTalkInput(options as TalkSendInput);
+    logTalkInfo("talk-engine send normalized input", {
+      action: "send.normalized",
+      input: summarizeNormalizedInput(input),
+    });
     if (input.action === "talk.stream") {
-      return this.streamReply(options);
+      const result = await this.streamReply(options);
+      logTalkInfo("talk-engine send complete", {
+        action: "send.complete",
+        flow: "stream",
+        result: "ok",
+        durationMs: Date.now() - beginAt,
+      });
+      return result;
     }
 
-    return this.generateReply(options);
+    const result = await this.generateReply(options);
+    logTalkInfo("talk-engine send complete", {
+      action: "send.complete",
+      flow: "nostream",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   },
 
   async generateReply(options: SendOptions): Promise<TalkNoStreamResult> {
     ensureOnline();
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine generateReply begin", {
+      action: "generate-reply.begin",
+      options: isRecord(options) ? options : { value: options },
+    });
 
     const normalizedInput = normalizeTalkInput({
       ...(isRecord(options) ? options : {}),
       action: "talk.nostream",
     });
+    logTalkInfo("talk-engine generateReply normalized input", {
+      action: "generate-reply.normalized",
+      input: summarizeNormalizedInput(normalizedInput),
+    });
 
-    return executeNoStreamWithHistory(normalizedInput);
+    const result = await executeNoStreamWithHistory(normalizedInput);
+    logTalkInfo("talk-engine generateReply complete", {
+      action: "generate-reply.complete",
+      result: "ok",
+      reply: result.reply,
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   },
 
   async streamReply(options: SendOptions): Promise<LlmStreamEmitter> {
     ensureOnline();
+    const beginAt = Date.now();
+    logTalkInfo("talk-engine streamReply begin", {
+      action: "stream-reply.begin",
+      options: isRecord(options) ? options : { value: options },
+    });
 
     const normalizedInput = normalizeTalkInput({
       ...(isRecord(options) ? options : {}),
       action: "talk.stream",
     });
+    logTalkInfo("talk-engine streamReply normalized input", {
+      action: "stream-reply.normalized",
+      input: summarizeNormalizedInput(normalizedInput),
+    });
 
-    return requestStreamWithHistory(normalizedInput);
+    const stream = await requestStreamWithHistory(normalizedInput);
+    logTalkInfo("talk-engine streamReply complete", {
+      action: "stream-reply.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
+    return stream;
   },
 };

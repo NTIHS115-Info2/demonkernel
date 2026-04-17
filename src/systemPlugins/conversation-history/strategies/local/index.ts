@@ -34,6 +34,13 @@ const logger = createKernelLogger("plugin-conversation-history-local", {
   strategy: "local",
 });
 
+function logHistoryInfo(message: string, meta: Record<string, unknown> = {}): void {
+  logger.info(message, {
+    stage: "conversation-history",
+    ...meta,
+  });
+}
+
 const VALID_ROLES = new Set<ConversationRole>(["system", "user", "assistant", "tool"]);
 
 type LocalRuntime = {
@@ -112,12 +119,24 @@ function ensureOnline(): void {
 function resolveScopeKey(scope: ConversationScopeInput): string {
   const conversationId = normalizeOptionalString(scope.conversationId);
   if (conversationId) {
-    return `conversation:${conversationId}`;
+    const key = `conversation:${conversationId}`;
+    logHistoryInfo("resolve scope key by conversationId", {
+      action: "scope.resolve",
+      conversationId,
+      scopeKey: key,
+    });
+    return key;
   }
 
   const userId = normalizeOptionalString(scope.userId);
   if (userId) {
-    return `user:${userId}`;
+    const key = `user:${userId}`;
+    logHistoryInfo("resolve scope key by userId", {
+      action: "scope.resolve",
+      userId,
+      scopeKey: key,
+    });
+    return key;
   }
 
   throw new Error("conversation history requires conversationId or userId");
@@ -217,6 +236,11 @@ async function ensureHistoryDirectory(): Promise<void> {
 async function loadMessages(scopeKey: string): Promise<ConversationHistoryMessage[]> {
   const cached = runtime.cache.get(scopeKey);
   if (cached) {
+    logHistoryInfo("history load cache hit", {
+      action: "load.cache-hit",
+      scopeKey,
+      cachedCount: cached.length,
+    });
     return cached;
   }
 
@@ -226,6 +250,12 @@ async function loadMessages(scopeKey: string): Promise<ConversationHistoryMessag
     const parsed = JSON.parse(content);
     const sanitized = sanitizeLoadedMessages(parsed);
     runtime.cache.set(scopeKey, sanitized);
+    logHistoryInfo("history load file success", {
+      action: "load.file",
+      scopeKey,
+      filePath,
+      loadedCount: sanitized.length,
+    });
     return sanitized;
   } catch (error) {
     const code = (error as { code?: string }).code;
@@ -237,6 +267,12 @@ async function loadMessages(scopeKey: string): Promise<ConversationHistoryMessag
       });
     }
     runtime.cache.set(scopeKey, []);
+    logHistoryInfo("history load file fallback empty", {
+      action: "load.file",
+      scopeKey,
+      filePath,
+      result: "fallback-empty",
+    });
     return runtime.cache.get(scopeKey) as ConversationHistoryMessage[];
   }
 }
@@ -260,10 +296,21 @@ async function rotateIfNeeded(filePath: string): Promise<void> {
 
   const stats = await fsPromises.stat(filePath);
   if (stats.size < runtime.config.maxFileSize) {
+    logHistoryInfo("history rotate skipped by size", {
+      action: "rotate.skip",
+      filePath,
+      fileSize: stats.size,
+      maxFileSize: runtime.config.maxFileSize,
+    });
     return;
   }
 
   if (runtime.config.backupCount <= 0) {
+    logHistoryInfo("history rotate skipped by backupCount", {
+      action: "rotate.skip",
+      filePath,
+      backupCount: runtime.config.backupCount,
+    });
     return;
   }
 
@@ -276,22 +323,45 @@ async function rotateIfNeeded(filePath: string): Promise<void> {
   }
 
   await moveWithOverwrite(filePath, `${filePath}.1`);
+  logHistoryInfo("history rotate complete", {
+    action: "rotate.complete",
+    filePath,
+    backupCount: runtime.config.backupCount,
+  });
 }
 
 async function saveMessages(scopeKey: string): Promise<void> {
   const filePath = resolveHistoryFilePath(scopeKey);
   const messages = runtime.cache.get(scopeKey) ?? [];
+  logHistoryInfo("history save begin", {
+    action: "save.begin",
+    scopeKey,
+    filePath,
+    messageCount: messages.length,
+  });
 
   await ensureHistoryDirectory();
   await rotateIfNeeded(filePath);
 
   await fsPromises.writeFile(filePath, JSON.stringify(messages, null, 2), "utf-8");
+  logHistoryInfo("history save complete", {
+    action: "save.complete",
+    scopeKey,
+    filePath,
+    messageCount: messages.length,
+  });
 }
 
 function applyPruneToCache(scopeKey: string): void {
   const current = runtime.cache.get(scopeKey) ?? [];
   const pruned = pruneMessages(current);
   runtime.cache.set(scopeKey, pruned);
+  logHistoryInfo("history prune cache", {
+    action: "cache.prune",
+    scopeKey,
+    beforeCount: current.length,
+    afterCount: pruned.length,
+  });
 }
 
 function normalizeRuntimeConfig(options: StrategyOnlineOptions): ConversationHistoryConfig {
@@ -407,9 +477,16 @@ async function deleteScopeHistoryFiles(filePath: string): Promise<void> {
 }
 
 async function appendInternal(input: ConversationHistoryAppendInput): Promise<void> {
+  const beginAt = Date.now();
   const scopeKey = ensureScope(input);
   const role = normalizeRole(input.role);
   const content = normalizeContent(input.content);
+  logHistoryInfo("history append begin", {
+    action: "append.begin",
+    scopeKey,
+    role,
+    content,
+  });
 
   await runScopeExclusive(scopeKey, async () => {
     const history = await loadMessages(scopeKey);
@@ -422,10 +499,22 @@ async function appendInternal(input: ConversationHistoryAppendInput): Promise<vo
     applyPruneToCache(scopeKey);
     await saveMessages(scopeKey);
   });
+  logHistoryInfo("history append complete", {
+    action: "append.complete",
+    scopeKey,
+    role,
+    durationMs: Date.now() - beginAt,
+  });
 }
 
 async function getRecentInternal(scope: ConversationScopeInput, limit?: unknown): Promise<ConversationHistoryMessage[]> {
+  const beginAt = Date.now();
   const scopeKey = ensureScope(scope);
+  logHistoryInfo("history recent begin", {
+    action: "recent.begin",
+    scopeKey,
+    limit: limit ?? null,
+  });
   return runScopeExclusive(scopeKey, async () => {
     await loadMessages(scopeKey);
 
@@ -435,15 +524,33 @@ async function getRecentInternal(scope: ConversationScopeInput, limit?: unknown)
     const history = runtime.cache.get(scopeKey) ?? [];
     const normalizedLimit = resolveRecentLimit(limit);
     if (!normalizedLimit) {
+      logHistoryInfo("history recent complete", {
+        action: "recent.complete",
+        scopeKey,
+        resultCount: history.length,
+        durationMs: Date.now() - beginAt,
+      });
       return [...history];
     }
-
-    return history.slice(-normalizedLimit);
+    const result = history.slice(-normalizedLimit);
+    logHistoryInfo("history recent complete", {
+      action: "recent.complete",
+      scopeKey,
+      resultCount: result.length,
+      requestedLimit: normalizedLimit,
+      durationMs: Date.now() - beginAt,
+    });
+    return result;
   });
 }
 
 async function clearInternal(scope: ConversationScopeInput): Promise<void> {
+  const beginAt = Date.now();
   const scopeKey = ensureScope(scope);
+  logHistoryInfo("history clear begin", {
+    action: "clear.begin",
+    scopeKey,
+  });
   await runScopeExclusive(scopeKey, async () => {
     runtime.cache.set(scopeKey, []);
 
@@ -458,12 +565,22 @@ async function clearInternal(scope: ConversationScopeInput): Promise<void> {
       });
     }
   });
+  logHistoryInfo("history clear complete", {
+    action: "clear.complete",
+    scopeKey,
+    durationMs: Date.now() - beginAt,
+  });
 }
 
 export default {
   method: METHOD_LOCAL,
 
   async online(options: StrategyOnlineOptions): Promise<void> {
+    const beginAt = Date.now();
+    logHistoryInfo("conversation-history online begin", {
+      action: "online.begin",
+      options,
+    });
     const typedOptions = (isRecord(options) ? options : {}) as ConversationHistoryOnlineOptions;
     assertLocalMethod(typedOptions.method ?? METHOD_LOCAL, "online");
 
@@ -481,25 +598,62 @@ export default {
       backupCount: runtime.config.backupCount,
       maxFileSize: runtime.config.maxFileSize,
     });
+    logHistoryInfo("conversation-history online complete", {
+      action: "online.complete",
+      result: "ok",
+      config: runtime.config,
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async offline(): Promise<void> {
+    const beginAt = Date.now();
+    logHistoryInfo("conversation-history offline begin", {
+      action: "offline.begin",
+    });
     runtime.online = false;
     runtime.cache.clear();
     runtime.scopeLocks.clear();
     logger.info("conversation-history offline");
+    logHistoryInfo("conversation-history offline complete", {
+      action: "offline.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async restart(options: StrategyRestartOptions): Promise<void> {
+    const beginAt = Date.now();
+    logHistoryInfo("conversation-history restart begin", {
+      action: "restart.begin",
+      options,
+    });
     await this.offline();
     await this.online(options);
     logger.info("conversation-history restarted");
+    logHistoryInfo("conversation-history restart complete", {
+      action: "restart.complete",
+      result: "ok",
+      durationMs: Date.now() - beginAt,
+    });
   },
 
   async state(): Promise<StateResult> {
+    logHistoryInfo("conversation-history state begin", {
+      action: "state.begin",
+      online: runtime.online,
+    });
     if (!runtime.online) {
+      logHistoryInfo("conversation-history state complete", {
+        action: "state.complete",
+        status: 0,
+      });
       return { status: 0 };
     }
+    logHistoryInfo("conversation-history state complete", {
+      action: "state.complete",
+      status: 1,
+    });
     return { status: 1 };
   },
 
@@ -521,6 +675,10 @@ export default {
   async send(options: SendOptions): Promise<unknown> {
     ensureOnline();
     const input = (isRecord(options) ? options : {}) as ConversationHistorySendInput;
+    logHistoryInfo("conversation-history send begin", {
+      action: "send.begin",
+      input,
+    });
 
     const action = normalizeOptionalString(input.action);
     if (!action || !(action in HISTORY_ACTION_ALIAS_TO_OPERATION)) {
@@ -530,13 +688,30 @@ export default {
     const operation = HISTORY_ACTION_ALIAS_TO_OPERATION[action];
     if (operation === "append") {
       await appendInternal(input);
+      logHistoryInfo("conversation-history send complete", {
+        action: "send.complete",
+        operation,
+        result: "ok",
+      });
       return null;
     }
     if (operation === "recent") {
-      return getRecentInternal(input, input.limit);
+      const result = await getRecentInternal(input, input.limit);
+      logHistoryInfo("conversation-history send complete", {
+        action: "send.complete",
+        operation,
+        resultCount: result.length,
+        result: "ok",
+      });
+      return result;
     }
 
     await clearInternal(input);
+    logHistoryInfo("conversation-history send complete", {
+      action: "send.complete",
+      operation,
+      result: "ok",
+    });
     return null;
   },
 };

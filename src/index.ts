@@ -145,21 +145,71 @@ function parseCliArgs(argv: string[]): CliArgs {
 }
 
 async function onlineRequiredPlugin(ref: string, onlineOptions: OnlineOptions): Promise<void> {
+  startupLogger.info("core plugin online begin", {
+    stage: "startup",
+    action: "plugin-online.begin",
+    pluginKey: ref,
+    onlineOptions,
+  });
+  const beginAt = Date.now();
   const result = await pluginsManager.online(ref, { onlineOptions });
   if (!result.ok) {
+    startupLogger.error("core plugin online failed", {
+      stage: "startup",
+      action: "plugin-online.error",
+      pluginKey: ref,
+      result: "failed",
+      durationMs: Date.now() - beginAt,
+      error: result.error ?? "unknown error",
+    });
     throw new Error(`online failed for ${result.key}: ${result.error ?? "unknown error"}`);
   }
+  startupLogger.info("core plugin online complete", {
+    stage: "startup",
+    action: "plugin-online.complete",
+    pluginKey: ref,
+    result: "ok",
+    durationMs: Date.now() - beginAt,
+    state: result.state,
+  });
 }
 
 export async function run(argv: string[] = process.argv.slice(2)): Promise<void> {
+  startupLogger.info("kernel startup begin", {
+    stage: "startup",
+    action: "run.begin",
+    argv,
+  });
   const cli = parseCliArgs(argv);
+  startupLogger.info("kernel cli args parsed", {
+    stage: "startup",
+    action: "cli.parsed",
+    plugin: cli.plugin ?? null,
+    options: cli.options,
+    llmBaseUrl: cli.llmBaseUrl,
+    llmModel: cli.llmModel,
+    talkRelayEnabled: cli.talkRelayEnabled,
+    talkRelayErrorReply: cli.talkRelayErrorReply,
+  });
 
   const summary = pluginsManager.discoverPlugins();
+  startupLogger.info("kernel plugin discovery complete", {
+    stage: "startup",
+    action: "discover.complete",
+    result: "ok",
+    summary,
+  });
   if (summary.registered === 0) {
     throw new Error("no plugins discovered under dist/skillPlugins and dist/systemPlugins");
   }
 
   const dependencyValidation = pluginsManager.validateDependencies();
+  startupLogger.info("kernel dependency validation complete", {
+    stage: "startup",
+    action: "dependencies.validate.complete",
+    result: dependencyValidation.ok ? "ok" : "warn",
+    errors: dependencyValidation.errors,
+  });
   if (!dependencyValidation.ok) {
     for (const message of dependencyValidation.errors) {
       startupLogger.warn(`[start] dependency validation warning: ${message}`);
@@ -168,7 +218,12 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
 
   if (cli.plugin) {
     await onlineRequiredPlugin(cli.plugin, cli.options);
-    startupLogger.info(`[start] plugin online ok: ${cli.plugin}`);
+    startupLogger.info("kernel single plugin online complete", {
+      stage: "startup",
+      action: "single-plugin.complete",
+      pluginKey: cli.plugin,
+      result: "ok",
+    });
   } else {
     if (!cli.llmBaseUrl) {
       throw new Error(
@@ -207,13 +262,31 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       await onlineRequiredPlugin("system:talk-engine", talkEngineOptions);
       startedPlugins.push("system:talk-engine");
     } catch (error) {
+      startupLogger.error("kernel core startup failed; rollback begin", {
+        stage: "startup",
+        action: "core-flow.error",
+        result: "failed",
+        startedPlugins,
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (startedPlugins.length > 0) {
         await pluginsManager.offlineAll();
+        startupLogger.info("kernel rollback offlineAll complete", {
+          stage: "startup",
+          action: "core-flow.rollback",
+          result: "ok",
+          startedPlugins,
+        });
       }
       throw error;
     }
 
-    startupLogger.info(`[start] core flow online: ${startedPlugins.join(", ")}`);
+    startupLogger.info("kernel core flow online complete", {
+      stage: "startup",
+      action: "core-flow.complete",
+      result: "ok",
+      startedPlugins,
+    });
   }
 
   let shuttingDown = false;
@@ -223,33 +296,68 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
     }
     shuttingDown = true;
 
-    startupLogger.info("[start] shutting down...");
+    startupLogger.info("kernel shutdown begin", {
+      stage: "shutdown",
+      action: "shutdown.begin",
+      signalHandled: true,
+    });
     const results = await pluginsManager.offlineAll();
+    startupLogger.info("kernel shutdown offlineAll complete", {
+      stage: "shutdown",
+      action: "shutdown.offline-all.complete",
+      results,
+      result: results.every((item) => item.ok) ? "ok" : "failed",
+    });
 
     for (const result of results) {
       if (!result.ok) {
-        startupLogger.error(
-          `[start] offline failed for ${result.key}: ${result.error ?? "unknown error"}`
-        );
+        startupLogger.error("kernel shutdown plugin offline failed", {
+          stage: "shutdown",
+          action: "shutdown.plugin-offline.error",
+          pluginKey: result.key,
+          result: "failed",
+          error: result.error ?? "unknown error",
+        });
       }
     }
 
+    startupLogger.info("kernel logger shutdown begin", {
+      stage: "shutdown",
+      action: "shutdown.logger.begin",
+    });
     await shutdownKernelLogger();
+    startupLogger.info("kernel shutdown process exit", {
+      stage: "shutdown",
+      action: "shutdown.exit",
+      result: "ok",
+    });
     process.exit(0);
   };
 
   process.on("SIGINT", () => {
+    startupLogger.info("kernel signal received", {
+      stage: "shutdown",
+      action: "signal.received",
+      signal: "SIGINT",
+    });
     void shutdown();
   });
 
   process.on("SIGTERM", () => {
+    startupLogger.info("kernel signal received", {
+      stage: "shutdown",
+      action: "signal.received",
+      signal: "SIGTERM",
+    });
     void shutdown();
   });
 }
 
 if (require.main === module) {
   run().catch((error) => {
-    startupLogger.error("[start] fatal:", {
+    startupLogger.error("kernel startup fatal error", {
+      stage: "startup",
+      action: "run.fatal",
       error: error instanceof Error ? error.message : String(error),
     });
     shutdownKernelLogger()
