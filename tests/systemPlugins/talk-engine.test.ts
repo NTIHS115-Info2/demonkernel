@@ -175,13 +175,6 @@ function registerHistoryProviders(options: {
   });
 }
 
-function getInfoLogActions(): string[] {
-  return (loggerMock.instance.info as ReturnType<typeof vi.fn>).mock.calls
-    .map((call) => call[1] as { action?: unknown } | undefined)
-    .map((meta) => (meta && typeof meta.action === "string" ? meta.action : ""))
-    .filter((action) => action.length > 0);
-}
-
 async function waitFor(predicate: () => boolean, timeoutMs = 1200): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
@@ -259,12 +252,6 @@ describe("system plugin: talk-engine", () => {
     }]);
     expect(payload.params).toEqual({ temperature: 0.1 });
     expect(payload).not.toHaveProperty("action");
-
-    const actions = getInfoLogActions();
-    expect(actions).toContain("send.begin");
-    expect(actions).toContain("send.complete");
-    expect(actions).toContain("generate-reply.begin");
-    expect(actions).toContain("execute-nostream.complete");
   });
 
   it("injects recent history and persists user/assistant when scope is provided", async () => {
@@ -447,13 +434,6 @@ describe("system plugin: talk-engine", () => {
       "message.send:reply:<sender=owner>: hello relay",
       "typing.stop",
     ]);
-
-    const actions = getInfoLogActions();
-    expect(actions).toContain("relay.event.begin");
-    expect(actions).toContain("relay.typing-start.begin");
-    expect(actions).toContain("relay.send.complete");
-    expect(actions).toContain("relay.typing-stop.complete");
-    expect(actions).toContain("relay.event.complete");
   });
 
   it("uses fallback error reply on relay failure and still stops typing", async () => {

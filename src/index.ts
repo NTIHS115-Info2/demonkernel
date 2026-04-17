@@ -325,12 +325,12 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       stage: "shutdown",
       action: "shutdown.logger.begin",
     });
-    await shutdownKernelLogger();
     startupLogger.info("kernel shutdown process exit", {
       stage: "shutdown",
       action: "shutdown.exit",
       result: "ok",
     });
+    await shutdownKernelLogger();
     process.exit(0);
   };
 

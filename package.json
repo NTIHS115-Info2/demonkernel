@@ -13,7 +13,7 @@
     "prepare": "husky install"
   },
   "name": "demonkernel",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "main": "index.js",
   "repository": "https://github.com/sandwichcookice/demonkernel.git",
   "license": "MIT",
