@@ -7,6 +7,12 @@ import type {
   StrategyRestartOptions,
 } from "../../../../core/plugin-sdk";
 import { createKernelLogger } from "../../../../core/logger";
+import {
+  createObservabilityRequestId,
+  summarizeText,
+  summarizeUnknown,
+  withObservability,
+} from "../../../../core/logger/observability";
 import capabilityRegistry from "../../../../core/registry";
 
 import {
@@ -58,10 +64,46 @@ const logger = createKernelLogger("plugin-talk-engine-local", {
 });
 
 function logTalkInfo(message: string, meta: Record<string, unknown> = {}): void {
-  logger.info(message, {
-    stage: "talk-engine",
-    ...meta,
-  });
+  const hasObservability = isRecord(meta.observability);
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "talk-engine",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
+}
+
+function logTalkRaw(
+  message: string,
+  requestId: string,
+  eventType: string,
+  meta: Record<string, unknown> = {}
+): void {
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "talk-engine",
+        ...meta,
+      },
+      {
+        kind: "raw",
+        requestId,
+        eventType,
+      }
+    )
+  );
 }
 
 let runtime: LocalRuntime = {
@@ -80,6 +122,7 @@ type ReasoningFlow = "nostream" | "stream";
 
 type ReasoningTracker = {
   flow: ReasoningFlow;
+  requestId: string;
   conversationId: string | null;
   userId: string | null;
   chunkCount: number;
@@ -95,7 +138,7 @@ type ReasoningTracker = {
 function summarizeNormalizedInput(input: NormalizedTalkInput): Record<string, unknown> {
   return {
     action: input.action,
-    message: input.message,
+    message: summarizeText(input.message),
     talker: input.talker,
     conversationId: input.conversationId,
     userId: input.userId,
@@ -103,15 +146,23 @@ function summarizeNormalizedInput(input: NormalizedTalkInput): Record<string, un
     model: input.model ?? null,
     toolCount: Array.isArray(input.tools) ? input.tools.length : 0,
     toolChoice: input.toolChoice ?? null,
-    params: input.params,
+    params: summarizeUnknown(input.params),
     timeoutMs: input.timeoutMs ?? null,
     connectionTimeoutMs: input.connectionTimeoutMs ?? null,
     maxRetries: input.maxRetries ?? null,
     retryDelayBaseMs: input.retryDelayBaseMs ?? null,
     reqId: input.reqId ?? null,
     reqIdHeader: input.reqIdHeader ?? null,
-    headers: input.headers ?? null,
+    headers: summarizeUnknown(input.headers ?? null),
   };
+}
+
+function resolveTalkRequestId(input: NormalizedTalkInput, flow: string): string {
+  return createObservabilityRequestId(`talk-engine:${flow}`, {
+    requestId: input.reqId ?? null,
+    conversationId: input.conversationId,
+    userId: input.userId,
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -194,9 +245,14 @@ function parseStreamDataArgs(args: unknown[]): { content: string; raw: unknown; 
   };
 }
 
-function createReasoningTracker(flow: ReasoningFlow, input: NormalizedTalkInput): ReasoningTracker {
+function createReasoningTracker(
+  flow: ReasoningFlow,
+  input: NormalizedTalkInput,
+  requestId: string
+): ReasoningTracker {
   return {
     flow,
+    requestId,
     conversationId: input.conversationId,
     userId: input.userId,
     chunkCount: 0,
@@ -231,12 +287,18 @@ function trackReasoningEvent(
   if (tracker.firstChunkIndex === null) {
     tracker.firstChunkIndex = tracker.dataEventCount;
     tracker.firstChunkAt = Date.now();
-    logger.info("reasoning tracker first chunk", {
+    logTalkInfo("reasoning tracker first chunk", {
       flow: tracker.flow,
+      requestId: tracker.requestId,
       conversationId: tracker.conversationId,
       userId: tracker.userId,
       firstChunkIndex: tracker.firstChunkIndex,
       firstChunkLength: payload.reasoning.length,
+      observability: {
+        kind: "node",
+        requestId: tracker.requestId,
+        eventType: "reasoning.first-chunk",
+      },
     });
   }
 
@@ -246,8 +308,9 @@ function trackReasoningEvent(
 }
 
 function flushReasoningTracker(tracker: ReasoningTracker, outcome: "end" | "error" | "abort"): void {
-  logger.info("reasoning tracker summary", {
+  logTalkInfo("reasoning tracker summary", {
     flow: tracker.flow,
+    requestId: tracker.requestId,
     outcome,
     conversationId: tracker.conversationId,
     userId: tracker.userId,
@@ -258,8 +321,27 @@ function flushReasoningTracker(tracker: ReasoningTracker, outcome: "end" | "erro
     firstChunkAt: tracker.firstChunkAt,
     visibleChunkCount: tracker.visibleChunkCount,
     visibleLength: tracker.visibleLength,
-    snippets: tracker.snippets,
+    snippetCount: tracker.snippets.length,
+    observability: {
+      kind: "node",
+      requestId: tracker.requestId,
+      eventType: "reasoning.summary",
+      outcome:
+        outcome === "end"
+          ? "success"
+          : outcome === "error"
+            ? "error"
+            : "abort",
+    },
   });
+
+  if (tracker.snippets.length > 0) {
+    logTalkRaw("reasoning tracker snippets", tracker.requestId, "reasoning.snippets", {
+      flow: tracker.flow,
+      snippetCount: tracker.snippets.length,
+      snippets: tracker.snippets.map((snippet) => summarizeText(snippet, 120)),
+    });
+  }
 }
 
 function assertLocalMethod(method: unknown, operation: string): void {
@@ -479,10 +561,24 @@ async function appendHistoryMessage(
 
   const provider = resolveHistoryAppendProvider();
   const beginAt = Date.now();
-  logTalkInfo("history append begin", {
-    action: "history.append.begin",
+  const requestId = createObservabilityRequestId("talk-engine:history-append", {
     conversationId: scope.conversationId ?? null,
     userId: scope.userId ?? null,
+  });
+  logTalkInfo("history append begin", {
+    action: "history.append.begin",
+    requestId,
+    conversationId: scope.conversationId ?? null,
+    userId: scope.userId ?? null,
+    role,
+    contentSummary: summarizeText(content),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "history.append.begin",
+    },
+  });
+  logTalkRaw("history append raw content", requestId, "history.append.content", {
     role,
     content,
   });
@@ -493,11 +589,18 @@ async function appendHistoryMessage(
   });
   logTalkInfo("history append complete", {
     action: "history.append.complete",
+    requestId,
     conversationId: scope.conversationId ?? null,
     userId: scope.userId ?? null,
     role,
     result: "ok",
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "history.append.complete",
+      outcome: "success",
+    },
   });
 }
 
@@ -511,6 +614,11 @@ async function loadHistoryForPromptSafe(input: NormalizedTalkInput): Promise<His
     return await loadHistoryForPrompt(input);
   } catch (error) {
     logger.warn("history recent load failed, continue without history", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        eventType: "history.load.safe-fallback",
+      },
       conversationId: scope.conversationId,
       userId: scope.userId,
       error: error instanceof Error ? error.message : String(error),
@@ -538,6 +646,11 @@ async function appendHistoryMessageSafe(
     await appendHistoryMessage(scope, role, content);
   } catch (error) {
     logger.warn("history append failed", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        eventType: "history.append.safe-fallback",
+      },
       conversationId: scope.conversationId,
       userId: scope.userId,
       role,
@@ -555,16 +668,23 @@ async function appendHistoryMessageSafe(
 
 function createHistoryAwareStream(
   sourceStream: LlmStreamEmitter,
-  input: NormalizedTalkInput
+  input: NormalizedTalkInput,
+  requestId: string
 ): LlmStreamEmitter {
   logTalkInfo("create history aware stream begin", {
     action: "stream.wrap.begin",
+    requestId,
     input: summarizeNormalizedInput(input),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "stream.wrap.begin",
+    },
   });
   const wrapped = new EventEmitter() as LlmStreamEmitter;
   const scope = resolveHistoryScope(input);
   const chunks: string[] = [];
-  const reasoningTracker = createReasoningTracker("stream", input);
+  const reasoningTracker = createReasoningTracker("stream", input, requestId);
   let reasoningFlushed = false;
   let ended = false;
   let aborted = false;
@@ -593,11 +713,11 @@ function createHistoryAwareStream(
 
     if (parsed.content.length > 0) {
       chunks.push(parsed.content);
-      logTalkInfo("stream wrapped data", {
-        action: "stream.wrap.data",
+      logTalkRaw("stream wrapped data", requestId, "stream.wrap.data", {
         conversationId: input.conversationId,
         userId: input.userId,
         chunk: parsed.content,
+        chunkSummary: summarizeText(parsed.content),
         chunkLength: parsed.content.length,
         reasoningLength: parsed.reasoning.length,
       });
@@ -614,10 +734,17 @@ function createHistoryAwareStream(
     flushTrackerOnce("error");
     logTalkInfo("stream wrapped error", {
       action: "stream.wrap.error",
+      requestId,
       conversationId: input.conversationId,
       userId: input.userId,
       error: error instanceof Error ? error.message : String(error),
       collectedChunkCount: chunks.length,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "stream.wrap.complete",
+        outcome: "error",
+      },
     });
     wrapped.emit("error", error);
   };
@@ -632,9 +759,16 @@ function createHistoryAwareStream(
     flushTrackerOnce("abort");
     logTalkInfo("stream wrapped abort", {
       action: "stream.wrap.abort",
+      requestId,
       conversationId: input.conversationId,
       userId: input.userId,
       collectedChunkCount: chunks.length,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "stream.wrap.complete",
+        outcome: "abort",
+      },
     });
     wrapped.emit("abort");
   };
@@ -646,14 +780,25 @@ function createHistoryAwareStream(
     ended = true;
     cleanup();
     flushTrackerOnce("end");
+    const collectedContent = chunks.join("");
     logTalkInfo("stream wrapped end", {
       action: "stream.wrap.end",
+      requestId,
       conversationId: input.conversationId,
       userId: input.userId,
       collectedChunkCount: chunks.length,
-      collectedContent: chunks.join(""),
+      collectedContent: summarizeText(collectedContent),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "stream.wrap.complete",
+        outcome: "success",
+      },
     });
-    void appendHistoryMessageSafe(scope, "assistant", chunks.join("")).finally(() => {
+    logTalkRaw("stream wrapped end raw content", requestId, "stream.wrap.end.content", {
+      collectedContent,
+    });
+    void appendHistoryMessageSafe(scope, "assistant", collectedContent).finally(() => {
       if (!aborted) {
         wrapped.emit("end");
       }
@@ -669,8 +814,14 @@ function createHistoryAwareStream(
     if (sourceStream.abort) {
       logTalkInfo("stream wrapped abort forwarded", {
         action: "stream.wrap.abort.forward",
+        requestId,
         conversationId: input.conversationId,
         userId: input.userId,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "stream.wrap.abort.forward",
+        },
       });
       sourceStream.abort();
       return;
@@ -682,73 +833,133 @@ function createHistoryAwareStream(
   return wrapped;
 }
 
-async function executeNoStreamWithHistory(input: NormalizedTalkInput): Promise<TalkNoStreamResult> {
+async function executeNoStreamWithHistory(
+  input: NormalizedTalkInput,
+  requestId: string
+): Promise<TalkNoStreamResult> {
   const beginAt = Date.now();
   logTalkInfo("nostream with history begin", {
     action: "nostream-with-history.begin",
+    requestId,
     input: summarizeNormalizedInput(input),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "nostream.begin",
+    },
   });
   const scope = resolveHistoryScope(input);
   const historyMessages = await loadHistoryForPromptSafe(input);
   const userContent = composePromptContent(input);
   logTalkInfo("nostream prompt prepared", {
     action: "nostream-with-history.prompt",
+    requestId,
     conversationId: scope?.conversationId ?? null,
     userId: scope?.userId ?? null,
-    userContent,
+    userContent: summarizeText(userContent),
     historyCount: historyMessages.length,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "nostream.prompt",
+    },
+  });
+  logTalkRaw("nostream prompt raw content", requestId, "nostream.prompt.content", {
+    userContent,
   });
   await appendHistoryMessageSafe(scope, "user", userContent);
 
-  const response = await executeNoStream(input, historyMessages);
+  const response = await executeNoStream(input, historyMessages, requestId);
   await appendHistoryMessageSafe(scope, "assistant", response.reply);
   logTalkInfo("nostream with history complete", {
     action: "nostream-with-history.complete",
+    requestId,
     conversationId: scope?.conversationId ?? null,
     userId: scope?.userId ?? null,
-    reply: response.reply,
+    reply: summarizeText(response.reply),
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "nostream.complete",
+      outcome: "success",
+    },
+  });
+  logTalkRaw("nostream reply raw content", requestId, "nostream.reply", {
+    reply: response.reply,
   });
   return response;
 }
 
-async function requestStreamWithHistory(input: NormalizedTalkInput): Promise<LlmStreamEmitter> {
+async function requestStreamWithHistory(
+  input: NormalizedTalkInput,
+  requestId: string
+): Promise<LlmStreamEmitter> {
   const beginAt = Date.now();
   logTalkInfo("stream with history begin", {
     action: "stream-with-history.begin",
+    requestId,
     input: summarizeNormalizedInput(input),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "stream.begin",
+    },
   });
   const scope = resolveHistoryScope(input);
   const historyMessages = await loadHistoryForPromptSafe(input);
   const userContent = composePromptContent(input);
   logTalkInfo("stream prompt prepared", {
     action: "stream-with-history.prompt",
+    requestId,
     conversationId: scope?.conversationId ?? null,
     userId: scope?.userId ?? null,
-    userContent,
+    userContent: summarizeText(userContent),
     historyCount: historyMessages.length,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "stream.prompt",
+    },
+  });
+  logTalkRaw("stream prompt raw content", requestId, "stream.prompt.content", {
+    userContent,
   });
   await appendHistoryMessageSafe(scope, "user", userContent);
 
-  const source = await requestTalkStream(input, historyMessages);
+  const source = await requestTalkStream(input, historyMessages, requestId);
   logTalkInfo("stream with history source ready", {
     action: "stream-with-history.source",
+    requestId,
     conversationId: scope?.conversationId ?? null,
     userId: scope?.userId ?? null,
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "stream.source-ready",
+    },
   });
-  return createHistoryAwareStream(source, input);
+  return createHistoryAwareStream(source, input, requestId);
 }
 
 async function requestTalkStream(
   input: NormalizedTalkInput,
-  promptMessages?: HistoryPromptMessage[]
+  promptMessages?: HistoryPromptMessage[],
+  requestId?: string
 ): Promise<LlmStreamEmitter> {
   const beginAt = Date.now();
+  const resolvedRequestId = requestId ?? resolveTalkRequestId(input, "request-stream");
   logTalkInfo("request talk stream begin", {
     action: "request-talk-stream.begin",
+    requestId: resolvedRequestId,
     input: summarizeNormalizedInput(input),
     promptMessagesCount: promptMessages?.length ?? 0,
+    observability: {
+      kind: "node",
+      requestId: resolvedRequestId,
+      eventType: "request-stream.begin",
+    },
   });
   const llmProvider = resolveLlmProvider();
   const payload = buildGatewayPayload(
@@ -761,29 +972,52 @@ async function requestTalkStream(
   );
   logTalkInfo("request talk stream payload built", {
     action: "request-talk-stream.payload",
+    requestId: resolvedRequestId,
+    payloadSummary: summarizeUnknown(payload),
+    observability: {
+      kind: "node",
+      requestId: resolvedRequestId,
+      eventType: "request-stream.payload",
+    },
+  });
+  logTalkRaw("request talk stream raw payload", resolvedRequestId, "request-stream.payload.raw", {
     payload,
   });
   const stream = await llmProvider.streamChat(payload);
   logTalkInfo("request talk stream complete", {
     action: "request-talk-stream.complete",
+    requestId: resolvedRequestId,
     durationMs: Date.now() - beginAt,
     result: "ok",
+    observability: {
+      kind: "node",
+      requestId: resolvedRequestId,
+      eventType: "request-stream.complete",
+    },
   });
   return assertLlmStream(stream);
 }
 
 async function executeNoStream(
   input: NormalizedTalkInput,
-  promptMessages?: HistoryPromptMessage[]
+  promptMessages?: HistoryPromptMessage[],
+  requestId?: string
 ): Promise<TalkNoStreamResult> {
   const beginAt = Date.now();
+  const resolvedRequestId = requestId ?? resolveTalkRequestId(input, "nostream");
   logTalkInfo("execute nostream begin", {
     action: "execute-nostream.begin",
+    requestId: resolvedRequestId,
     input: summarizeNormalizedInput(input),
     promptMessagesCount: promptMessages?.length ?? 0,
+    observability: {
+      kind: "node",
+      requestId: resolvedRequestId,
+      eventType: "execute-nostream.begin",
+    },
   });
-  const stream = await requestTalkStream(input, promptMessages);
-  const reasoningTracker = createReasoningTracker("nostream", input);
+  const stream = await requestTalkStream(input, promptMessages, resolvedRequestId);
+  const reasoningTracker = createReasoningTracker("nostream", input, resolvedRequestId);
 
   try {
     const reply = await collectStreamReply(stream, {
@@ -798,26 +1032,53 @@ async function executeNoStream(
     const normalizedReply = normalizeAssistantReply(reply);
     logTalkInfo("execute nostream complete", {
       action: "execute-nostream.complete",
-      reply: normalizedReply,
+      requestId: resolvedRequestId,
+      reply: summarizeText(normalizedReply),
       durationMs: Date.now() - beginAt,
       result: "ok",
+      observability: {
+        kind: "node",
+        requestId: resolvedRequestId,
+        eventType: "execute-nostream.complete",
+        outcome: "success",
+      },
+    });
+    logTalkRaw("execute nostream raw reply", resolvedRequestId, "execute-nostream.reply.raw", {
+      reply: normalizedReply,
     });
     return { reply: normalizedReply };
   } catch (error) {
     flushReasoningTracker(reasoningTracker, "error");
     logTalkInfo("execute nostream failed", {
       action: "execute-nostream.error",
+      requestId: resolvedRequestId,
       durationMs: Date.now() - beginAt,
       result: "failed",
       error: error instanceof Error ? error.message : String(error),
+      observability: {
+        kind: "node",
+        requestId: resolvedRequestId,
+        eventType: "execute-nostream.complete",
+        outcome: "error",
+      },
     });
     throw error;
   }
 }
 
-async function sendDiscordMessage(channelId: string, message: string): Promise<void> {
+async function sendDiscordMessage(channelId: string, message: string, requestId: string): Promise<void> {
   logTalkInfo("relay send message begin", {
     action: "relay.send.begin",
+    requestId,
+    channelId,
+    message: summarizeText(message),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.send.begin",
+    },
+  });
+  logTalkRaw("relay send message raw content", requestId, "relay.send.message.raw", {
     channelId,
     message,
   });
@@ -828,15 +1089,27 @@ async function sendDiscordMessage(channelId: string, message: string): Promise<v
   });
   logTalkInfo("relay send message complete", {
     action: "relay.send.complete",
+    requestId,
     channelId,
     result: "ok",
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.send.complete",
+    },
   });
 }
 
-async function startDiscordTyping(channelId: string): Promise<void> {
+async function startDiscordTyping(channelId: string, requestId: string): Promise<void> {
   logTalkInfo("relay typing start begin", {
     action: "relay.typing-start.begin",
+    requestId,
     channelId,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.typing-start.begin",
+    },
   });
   const provider = resolveDiscordTypingStartProvider();
   await provider.startTyping({
@@ -844,15 +1117,27 @@ async function startDiscordTyping(channelId: string): Promise<void> {
   });
   logTalkInfo("relay typing start complete", {
     action: "relay.typing-start.complete",
+    requestId,
     channelId,
     result: "ok",
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.typing-start.complete",
+    },
   });
 }
 
-async function stopDiscordTyping(channelId: string): Promise<void> {
+async function stopDiscordTyping(channelId: string, requestId: string): Promise<void> {
   logTalkInfo("relay typing stop begin", {
     action: "relay.typing-stop.begin",
+    requestId,
     channelId,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.typing-stop.begin",
+    },
   });
   const provider = resolveDiscordTypingStopProvider();
   await provider.stopTyping({
@@ -860,15 +1145,35 @@ async function stopDiscordTyping(channelId: string): Promise<void> {
   });
   logTalkInfo("relay typing stop complete", {
     action: "relay.typing-stop.complete",
+    requestId,
     channelId,
     result: "ok",
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.typing-stop.complete",
+    },
   });
 }
 
 async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> {
   const beginAt = Date.now();
+  const requestId = createObservabilityRequestId("talk-engine:relay-event", {
+    requestId: normalizeOptionalString(event?.messageId),
+    conversationId: normalizeOptionalString(event?.channelId),
+    userId: normalizeOptionalString(event?.author?.id),
+  });
   logTalkInfo("relay event begin", {
     action: "relay.event.begin",
+    requestId,
+    eventSummary: summarizeUnknown(event),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.event.begin",
+    },
+  });
+  logTalkRaw("relay event raw payload", requestId, "relay.event.payload.raw", {
     event,
   });
   if (!event || typeof event !== "object") {
@@ -877,13 +1182,28 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
 
   const channelId = normalizeOptionalString(event.channelId);
   if (!channelId) {
-    logger.warn("relay event skipped: missing channelId");
+    logger.warn("relay event skipped: missing channelId", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "relay.event.validate",
+      },
+    });
     return;
   }
 
   const content = normalizeOptionalString(event.content);
   if (!content) {
-    logger.warn("relay event skipped: missing content", { channelId });
+    logger.warn("relay event skipped: missing content", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "relay.event.validate",
+      },
+      channelId,
+    });
     return;
   }
 
@@ -897,58 +1217,111 @@ async function handleRelayEvent(event: DiscordConversationEvent): Promise<void> 
     userId,
     historyLimit: DEFAULT_HISTORY_LIMIT,
     params: {},
+    reqId: requestId,
   };
   logTalkInfo("relay input normalized", {
     action: "relay.event.normalized-input",
+    requestId,
     input: summarizeNormalizedInput(normalizedInput),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "relay.event.normalized-input",
+    },
   });
 
-  await startDiscordTyping(channelId);
+  await startDiscordTyping(channelId, requestId);
 
   try {
-    const response = await executeNoStreamWithHistory(normalizedInput);
-    await sendDiscordMessage(channelId, response.reply);
+    const response = await executeNoStreamWithHistory(normalizedInput, requestId);
+    await sendDiscordMessage(channelId, response.reply, requestId);
     logTalkInfo("relay event complete", {
       action: "relay.event.complete",
+      requestId,
       channelId,
       result: "ok",
-      reply: response.reply,
+      reply: summarizeText(response.reply),
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "relay.event.complete",
+        outcome: "success",
+      },
+    });
+    logTalkRaw("relay event raw reply", requestId, "relay.event.reply.raw", {
+      reply: response.reply,
     });
   } catch (error) {
     logger.error("relay event processing failed", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "relay.event.complete",
+        outcome: "error",
+      },
       channelId,
       error: error instanceof Error ? error.message : String(error),
     });
 
     try {
-      await sendDiscordMessage(channelId, runtime.relay.errorReply);
+      await sendDiscordMessage(channelId, runtime.relay.errorReply, requestId);
       await appendHistoryMessageSafe(resolveHistoryScope(normalizedInput), "assistant", runtime.relay.errorReply);
       logTalkInfo("relay event fallback complete", {
         action: "relay.event.fallback",
+        requestId,
         channelId,
         result: "ok",
+        fallbackReply: summarizeText(runtime.relay.errorReply),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "relay.event.fallback",
+        },
+      });
+      logTalkRaw("relay event fallback raw reply", requestId, "relay.event.fallback.reply.raw", {
         fallbackReply: runtime.relay.errorReply,
       });
     } catch (sendError) {
       logger.error("relay fallback reply failed", {
+        stage: "talk-engine",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "relay.event.fallback",
+          outcome: "error",
+        },
         channelId,
         error: sendError instanceof Error ? sendError.message : String(sendError),
       });
     }
   } finally {
     try {
-      await stopDiscordTyping(channelId);
+      await stopDiscordTyping(channelId, requestId);
     } catch (error) {
       logger.warn("relay typing stop failed", {
+        stage: "talk-engine",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "relay.typing-stop.complete",
+          outcome: "error",
+        },
         channelId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
     logTalkInfo("relay event finalize", {
       action: "relay.event.finalize",
+      requestId,
       channelId,
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "relay.event.finalize",
+      },
     });
   }
 }
@@ -967,6 +1340,16 @@ async function setupRelay(): Promise<void> {
     handler: handleRelayEvent,
     onError: (event, error) => {
       logger.error("relay queue handler failed", {
+        stage: "talk-engine",
+        observability: {
+          kind: "node",
+          requestId: createObservabilityRequestId("talk-engine:relay-queue", {
+            conversationId: normalizeOptionalString(event?.channelId),
+            userId: normalizeOptionalString(event?.author?.id),
+          }),
+          eventType: "relay.queue.error",
+          outcome: "error",
+        },
         channelId: event?.channelId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -979,6 +1362,12 @@ async function setupRelay(): Promise<void> {
 
   const errorListener = (error: unknown): void => {
     logger.error("discord relay stream error", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        eventType: "relay.stream.error",
+        outcome: "error",
+      },
       error: error instanceof Error ? error.message : String(error),
     });
   };
@@ -1072,6 +1461,10 @@ export default {
       }
 
       logger.info("talk-engine online", {
+        observability: {
+          kind: "node",
+          eventType: "online.state",
+        },
         relayEnabled: runtime.relay.enabled,
       });
       logTalkInfo("talk-engine online complete", {
@@ -1103,7 +1496,13 @@ export default {
     runtime.relay.enabled = DEFAULT_RELAY_ENABLED;
     runtime.relay.errorReply = DEFAULT_RELAY_ERROR_REPLY;
 
-    logger.info("talk-engine offline");
+    logger.info("talk-engine offline", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        eventType: "offline.state",
+      },
+    });
     logTalkInfo("talk-engine offline complete", {
       action: "offline.complete",
       result: "ok",
@@ -1119,7 +1518,13 @@ export default {
     });
     await this.offline();
     await this.online(options);
-    logger.info("talk-engine restarted");
+    logger.info("talk-engine restarted", {
+      stage: "talk-engine",
+      observability: {
+        kind: "node",
+        eventType: "restart.state",
+      },
+    });
     logTalkInfo("talk-engine restart complete", {
       action: "restart.complete",
       result: "ok",
@@ -1153,21 +1558,37 @@ export default {
     const beginAt = Date.now();
     logTalkInfo("talk-engine send begin", {
       action: "send.begin",
-      options: isRecord(options) ? options : { value: options },
+      optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
     });
 
     const input = normalizeTalkInput(options as TalkSendInput);
+    const requestId = resolveTalkRequestId(input, "send");
     logTalkInfo("talk-engine send normalized input", {
       action: "send.normalized",
+      requestId,
       input: summarizeNormalizedInput(input),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.normalized",
+      },
+    });
+    logTalkRaw("talk-engine send raw options", requestId, "send.options.raw", {
+      options: isRecord(options) ? options : { value: options },
     });
     if (input.action === "talk.stream") {
       const result = await this.streamReply(options);
       logTalkInfo("talk-engine send complete", {
         action: "send.complete",
+        requestId,
         flow: "stream",
         result: "ok",
         durationMs: Date.now() - beginAt,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+        },
       });
       return result;
     }
@@ -1175,9 +1596,15 @@ export default {
     const result = await this.generateReply(options);
     logTalkInfo("talk-engine send complete", {
       action: "send.complete",
+      requestId,
       flow: "nostream",
       result: "ok",
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.complete",
+      },
     });
     return result;
   },
@@ -1187,24 +1614,41 @@ export default {
     const beginAt = Date.now();
     logTalkInfo("talk-engine generateReply begin", {
       action: "generate-reply.begin",
-      options: isRecord(options) ? options : { value: options },
+      optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
     });
 
     const normalizedInput = normalizeTalkInput({
       ...(isRecord(options) ? options : {}),
       action: "talk.nostream",
     });
+    const requestId = resolveTalkRequestId(normalizedInput, "generate-reply");
     logTalkInfo("talk-engine generateReply normalized input", {
       action: "generate-reply.normalized",
+      requestId,
       input: summarizeNormalizedInput(normalizedInput),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "generate-reply.normalized",
+      },
+    });
+    logTalkRaw("talk-engine generateReply raw options", requestId, "generate-reply.options.raw", {
+      options: isRecord(options) ? options : { value: options },
     });
 
-    const result = await executeNoStreamWithHistory(normalizedInput);
+    const result = await executeNoStreamWithHistory(normalizedInput, requestId);
     logTalkInfo("talk-engine generateReply complete", {
       action: "generate-reply.complete",
+      requestId,
       result: "ok",
-      reply: result.reply,
+      reply: summarizeText(result.reply),
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "generate-reply.complete",
+        outcome: "success",
+      },
     });
     return result;
   },
@@ -1214,23 +1658,39 @@ export default {
     const beginAt = Date.now();
     logTalkInfo("talk-engine streamReply begin", {
       action: "stream-reply.begin",
-      options: isRecord(options) ? options : { value: options },
+      optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
     });
 
     const normalizedInput = normalizeTalkInput({
       ...(isRecord(options) ? options : {}),
       action: "talk.stream",
     });
+    const requestId = resolveTalkRequestId(normalizedInput, "stream-reply");
     logTalkInfo("talk-engine streamReply normalized input", {
       action: "stream-reply.normalized",
+      requestId,
       input: summarizeNormalizedInput(normalizedInput),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "stream-reply.normalized",
+      },
+    });
+    logTalkRaw("talk-engine streamReply raw options", requestId, "stream-reply.options.raw", {
+      options: isRecord(options) ? options : { value: options },
     });
 
-    const stream = await requestStreamWithHistory(normalizedInput);
+    const stream = await requestStreamWithHistory(normalizedInput, requestId);
     logTalkInfo("talk-engine streamReply complete", {
       action: "stream-reply.complete",
+      requestId,
       result: "ok",
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "stream-reply.complete",
+      },
     });
     return stream;
   },

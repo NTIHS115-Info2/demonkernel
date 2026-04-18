@@ -79,6 +79,13 @@ await shutdownKernelLogger();
 3. 大量 debug 追蹤請用短期設定，不建議長期常駐。
 4. 壓縮檔永久保留時，請由外部維運機制定期清理。
 
+## Raw 診斷維運（v0.15.2）
+
+1. 預設 `kind=raw` 不直接落盤，僅留在 request ring buffer。
+2. `error/abort/timeout` 會自動導出最近 N 筆 raw trace（含 preview/大小資訊）。
+3. `success` 會只清理 buffer，不導出。
+4. 可用 `LOG_STREAM_RAW=true` 強制 raw 直寫（用於短期排障，避免長期開啟）。
+
 ## 最小可用範例
 
 ```ts

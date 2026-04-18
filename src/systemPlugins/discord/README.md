@@ -9,7 +9,7 @@
 
 ## 1. 版本與能力契約
 
-- plugin version: `0.4.0`
+- plugin version: `0.4.1`
 - capability schema version: `2.0.0`（provider-first，移除 capability action alias 契約）
 
 ## 2. Online Options（local）

@@ -8,7 +8,7 @@
 
 ## 1. 版本與能力契約
 
-- plugin version: `1.3.0`
+- plugin version: `1.3.1`
 - capability schema version: `2.0.0`（provider-first，移除 capability action alias 契約）
 
 ## 2. Online Options（remote）

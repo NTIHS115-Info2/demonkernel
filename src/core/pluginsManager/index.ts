@@ -7,6 +7,11 @@ import type {
   SendOptions,
 } from "../plugin-sdk";
 import { createKernelLogger } from "../logger";
+import {
+  createObservabilityRequestId,
+  summarizeUnknown,
+  withObservability,
+} from "../logger/observability";
 import { CapabilitiesManager } from "../capabilities";
 import defaultCapabilityRegistry, { CapabilityRegistry } from "../registry";
 
@@ -131,23 +136,109 @@ export class PluginsManager {
   };
 
   private logInfo(message: string, meta: Record<string, unknown> = {}): void {
-    this.logger.info(message, {
-      stage: "manager",
-      ...meta,
-    });
+    const hasObservability =
+      typeof meta.observability === "object"
+      && meta.observability !== null
+      && !Array.isArray(meta.observability);
+    this.logger.info(
+      message,
+      withObservability(
+        {
+          stage: "manager",
+          ...meta,
+        },
+        hasObservability
+          ? (meta.observability as {
+              kind: "node" | "raw";
+              requestId?: string;
+              eventType?: string;
+              outcome?: "success" | "error" | "abort" | "timeout";
+            })
+          : { kind: "node" }
+      )
+    );
   }
 
   private logWarn(message: string, meta: Record<string, unknown> = {}): void {
-    this.logger.warn(message, {
-      stage: "manager",
-      ...meta,
-    });
+    const hasObservability =
+      typeof meta.observability === "object"
+      && meta.observability !== null
+      && !Array.isArray(meta.observability);
+    this.logger.warn(
+      message,
+      withObservability(
+        {
+          stage: "manager",
+          ...meta,
+        },
+        hasObservability
+          ? (meta.observability as {
+              kind: "node" | "raw";
+              requestId?: string;
+              eventType?: string;
+              outcome?: "success" | "error" | "abort" | "timeout";
+            })
+          : { kind: "node" }
+      )
+    );
   }
 
   private logError(message: string, meta: Record<string, unknown> = {}): void {
-    this.logger.error(message, {
-      stage: "manager",
-      ...meta,
+    const hasObservability =
+      typeof meta.observability === "object"
+      && meta.observability !== null
+      && !Array.isArray(meta.observability);
+    this.logger.error(
+      message,
+      withObservability(
+        {
+          stage: "manager",
+          ...meta,
+        },
+        hasObservability
+          ? (meta.observability as {
+              kind: "node" | "raw";
+              requestId?: string;
+              eventType?: string;
+              outcome?: "success" | "error" | "abort" | "timeout";
+            })
+          : { kind: "node" }
+      )
+    );
+  }
+
+  private logRaw(
+    message: string,
+    requestId: string,
+    eventType: string,
+    meta: Record<string, unknown> = {}
+  ): void {
+    this.logger.info(
+      message,
+      withObservability(
+        {
+          stage: "manager",
+          ...meta,
+        },
+        {
+          kind: "raw",
+          requestId,
+          eventType,
+        }
+      )
+    );
+  }
+
+  private createManagerRequestId(
+    scope: string,
+    seed: {
+      requestId?: string | null;
+      pluginKey?: string | null;
+    } = {}
+  ): string {
+    return createObservabilityRequestId(`plugins-manager:${scope}`, {
+      requestId: seed.requestId ?? null,
+      conversationId: seed.pluginKey ?? null,
     });
   }
 
@@ -424,11 +515,30 @@ export class PluginsManager {
   }
 
   async online(ref: PluginRef, command: OnlineCommandOptions = {}): Promise<LifecycleActionResult> {
+    const requestId = this.createManagerRequestId("command-online", {
+      requestId:
+        typeof command.onlineOptions === "object"
+        && command.onlineOptions !== null
+        && !Array.isArray(command.onlineOptions)
+          ? (command.onlineOptions as Record<string, unknown>).reqId as string | undefined
+          : undefined,
+    });
     this.logInfo("online command begin", {
       action: "online.begin",
+      requestId,
       ref: String(ref),
-      onlineOptions: command.onlineOptions ?? null,
+      onlineOptions: summarizeUnknown(command.onlineOptions ?? null),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "online.begin",
+      },
     });
+    if (command.onlineOptions) {
+      this.logRaw("online command raw options", requestId, "online.options.raw", {
+        onlineOptions: command.onlineOptions,
+      });
+    }
     try {
       const key = this.resolvePluginKey(ref);
       const perPluginOnlineOptions: Record<string, OnlineOptions> = {};
@@ -444,10 +554,17 @@ export class PluginsManager {
         const runtime = this.ensureRuntime(key);
         this.logInfo("online command complete", {
           action: "online.complete",
+          requestId,
           pluginKey: key,
           result: "ok",
           state: runtime.state,
           started: report.started.includes(key),
+          observability: {
+            kind: "node",
+            requestId,
+            eventType: "online.complete",
+            outcome: "success",
+          },
         });
         return {
           key,
@@ -460,10 +577,17 @@ export class PluginsManager {
       const runtime = this.ensureRuntime(key);
       this.logWarn("online command failed", {
         action: "online.complete",
+        requestId,
         pluginKey: key,
         result: "failed",
         state: runtime.state,
         error: failed?.reason ?? "online failed",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "online.complete",
+          outcome: "error",
+        },
       });
       return {
         key,
@@ -475,9 +599,16 @@ export class PluginsManager {
       const runtimeKey = typeof ref === "string" ? ref : "unknown";
       this.logError("online command threw error", {
         action: "online.error",
+        requestId,
         pluginKey: runtimeKey,
         result: "failed",
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "online.complete",
+          outcome: "error",
+        },
       });
       return {
         key: runtimeKey,
@@ -489,9 +620,16 @@ export class PluginsManager {
   }
 
   async offline(ref: PluginRef): Promise<LifecycleActionResult> {
+    const requestId = this.createManagerRequestId("command-offline");
     this.logInfo("offline command begin", {
       action: "offline.begin",
+      requestId,
       ref: String(ref),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "offline.begin",
+      },
     });
     let key: string = typeof ref === "string" ? ref : "unknown";
     try {
@@ -499,9 +637,16 @@ export class PluginsManager {
     } catch (error) {
       this.logWarn("offline command failed to resolve key", {
         action: "offline.error",
+        requestId,
         pluginKey: String(key),
         result: "failed",
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "offline.complete",
+          outcome: "error",
+        },
       });
       return {
         key: String(key),
@@ -515,38 +660,76 @@ export class PluginsManager {
       const resolvedKey = key as PluginKey;
       const handle = this.ensureHandle(resolvedKey);
       const runtime = this.ensureRuntime(resolvedKey);
-      const result = await runOfflineLifecycle({ handle, runtime, logger: this.logger });
+      const result = await runOfflineLifecycle({
+        handle,
+        runtime,
+        logger: this.logger,
+        requestId,
+      });
       if (result.ok) {
         this.capabilityRegistry.removeByPluginInternal(resolvedKey);
       }
       this.logInfo("offline command complete", {
         action: "offline.complete",
+        requestId,
         pluginKey: resolvedKey,
         result: result.ok ? "ok" : "failed",
         state: result.state,
         error: result.error ?? null,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "offline.complete",
+          outcome: result.ok ? "success" : "error",
+        },
       });
       return result;
     } catch (error) {
-      return this.handleLifecycleError(key as PluginKey, "OFFLINE_FAILED", error);
+      return this.handleLifecycleError(key as PluginKey, "OFFLINE_FAILED", error, requestId);
     }
   }
 
   async restart(ref: PluginRef, command: OnlineCommandOptions = {}): Promise<LifecycleActionResult> {
+    const requestId = this.createManagerRequestId("command-restart", {
+      requestId:
+        typeof command.onlineOptions === "object"
+        && command.onlineOptions !== null
+        && !Array.isArray(command.onlineOptions)
+          ? (command.onlineOptions as Record<string, unknown>).reqId as string | undefined
+          : undefined,
+    });
     this.logInfo("restart command begin", {
       action: "restart.begin",
+      requestId,
       ref: String(ref),
-      onlineOptions: command.onlineOptions ?? null,
+      onlineOptions: summarizeUnknown(command.onlineOptions ?? null),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "restart.begin",
+      },
     });
+    if (command.onlineOptions) {
+      this.logRaw("restart command raw options", requestId, "restart.options.raw", {
+        onlineOptions: command.onlineOptions,
+      });
+    }
     let key: string = typeof ref === "string" ? ref : "unknown";
     try {
       key = this.resolvePluginKey(ref);
     } catch (error) {
       this.logWarn("restart command failed to resolve key", {
         action: "restart.error",
+        requestId,
         pluginKey: String(key),
         result: "failed",
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "restart.complete",
+          outcome: "error",
+        },
       });
       return {
         key: String(key),
@@ -561,25 +744,55 @@ export class PluginsManager {
       const handle = this.ensureHandle(resolvedKey);
       const runtime = this.ensureRuntime(resolvedKey);
 
-      const result = await runRestartLifecycle({ handle, runtime, command, logger: this.logger });
+      const result = await runRestartLifecycle({
+        handle,
+        runtime,
+        command,
+        logger: this.logger,
+        requestId,
+      });
       this.registerCapabilityProviders(resolvedKey, handle.module);
       this.logInfo("restart command complete", {
         action: "restart.complete",
+        requestId,
         pluginKey: resolvedKey,
         result: result.ok ? "ok" : "failed",
         state: result.state,
         error: result.error ?? null,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "restart.complete",
+          outcome: result.ok ? "success" : "error",
+        },
       });
       return result;
     } catch (error) {
-      return this.handleLifecycleError(key as PluginKey, "RESTART_FAILED", error);
+      return this.handleLifecycleError(key as PluginKey, "RESTART_FAILED", error, requestId);
     }
   }
 
   async send(ref: PluginRef, payload: SendOptions): Promise<LifecycleActionResult<unknown>> {
+    const requestId = this.createManagerRequestId("command-send", {
+      requestId:
+        typeof payload === "object"
+        && payload !== null
+        && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>).reqId as string | undefined
+          : undefined,
+    });
     this.logInfo("send command begin", {
       action: "send.begin",
+      requestId,
       ref: String(ref),
+      payload: summarizeUnknown(payload),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.begin",
+      },
+    });
+    this.logRaw("send command raw payload", requestId, "send.payload.raw", {
       payload,
     });
     let key: string = typeof ref === "string" ? ref : "unknown";
@@ -588,9 +801,16 @@ export class PluginsManager {
     } catch (error) {
       this.logWarn("send command failed to resolve key", {
         action: "send.error",
+        requestId,
         pluginKey: String(key),
         result: "failed",
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+          outcome: "error",
+        },
       });
       return {
         key: String(key),
@@ -605,25 +825,48 @@ export class PluginsManager {
       const handle = this.ensureHandle(resolvedKey);
       const runtime = this.ensureRuntime(resolvedKey);
       const command: SendCommandOptions = { payload };
-      const result = await runSendLifecycle({ handle, runtime, command, logger: this.logger });
+      const result = await runSendLifecycle({
+        handle,
+        runtime,
+        command,
+        logger: this.logger,
+        requestId,
+      });
       this.logInfo("send command complete", {
         action: "send.complete",
+        requestId,
         pluginKey: resolvedKey,
         result: result.ok ? "ok" : "failed",
         state: result.state,
-        value: result.value,
+        value: summarizeUnknown(result.value),
         error: result.error ?? null,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+          outcome: result.ok ? "success" : "error",
+        },
+      });
+      this.logRaw("send command raw value", requestId, "send.value.raw", {
+        value: result.value,
       });
       return result;
     } catch (error) {
-      return this.handleLifecycleError(key as PluginKey, "SEND_FAILED", error);
+      return this.handleLifecycleError(key as PluginKey, "SEND_FAILED", error, requestId);
     }
   }
 
   async state(ref: PluginRef): Promise<StateResult> {
+    const requestId = this.createManagerRequestId("command-state");
     this.logInfo("state command begin", {
       action: "state.begin",
+      requestId,
       ref: String(ref),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "state.begin",
+      },
     });
     let key: string = typeof ref === "string" ? ref : "unknown";
     try {
@@ -631,9 +874,16 @@ export class PluginsManager {
     } catch (error) {
       this.logWarn("state command failed to resolve key", {
         action: "state.error",
+        requestId,
         pluginKey: String(key),
         result: "failed",
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "state.complete",
+          outcome: "error",
+        },
       });
       return {
         key: String(key),
@@ -648,13 +898,25 @@ export class PluginsManager {
 
     try {
       const handle = this.ensureHandle(resolvedKey);
-      const pluginState = await runStateLifecycle({ handle, runtime, logger: this.logger });
+      const pluginState = await runStateLifecycle({
+        handle,
+        runtime,
+        logger: this.logger,
+        requestId,
+      });
       this.logInfo("state command complete", {
         action: "state.complete",
+        requestId,
         pluginKey: resolvedKey,
         result: "ok",
         managerState: runtime.state,
         pluginState,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "state.complete",
+          outcome: "success",
+        },
       });
       return {
         key: resolvedKey,
@@ -668,9 +930,16 @@ export class PluginsManager {
       runtime.lastError = message;
       this.logError("state command failed", {
         action: "state.error",
+        requestId,
         pluginKey: resolvedKey,
         result: "failed",
         error: message,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "state.complete",
+          outcome: "error",
+        },
       });
       return {
         key: resolvedKey,
@@ -937,7 +1206,7 @@ export class PluginsManager {
         action: "online-options.resolve",
         pluginKey: key,
         source: "perPlugin.key",
-        onlineOptions: direct,
+        onlineOptions: summarizeUnknown(direct),
       });
       return direct;
     }
@@ -949,7 +1218,7 @@ export class PluginsManager {
         action: "online-options.resolve",
         pluginKey: key,
         source: "perPlugin.name",
-        onlineOptions: byName,
+        onlineOptions: summarizeUnknown(byName),
       });
       return byName;
     }
@@ -960,7 +1229,7 @@ export class PluginsManager {
         action: "online-options.resolve",
         pluginKey: key,
         source: "default",
-        onlineOptions: resolved,
+        onlineOptions: summarizeUnknown(resolved),
       });
       return resolved;
     }
@@ -979,28 +1248,50 @@ export class PluginsManager {
     startupOptions: StartupOptions
   ): Promise<LifecycleActionResult> {
     const beginAt = Date.now();
+    const requestId = this.createManagerRequestId("start-plugin", {
+      pluginKey: key,
+    });
     this.logInfo("start plugin begin", {
       action: "start-plugin.begin",
       pluginKey: key,
+      requestId,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "start-plugin.begin",
+      },
     });
     try {
       const handle = this.ensureHandle(key);
       const runtime = this.ensureRuntime(key);
       const onlineOptions = this.resolveOnlineOptions(key, startupOptions);
+      if (onlineOptions) {
+        this.logRaw("start plugin raw online options", requestId, "start-plugin.options.raw", {
+          onlineOptions,
+        });
+      }
 
       const result = await runOnlineLifecycle({
         handle,
         runtime,
         command: { onlineOptions },
         logger: this.logger,
+        requestId,
       });
       this.registerCapabilityProviders(key, handle.module);
       this.logInfo("start plugin complete", {
         action: "start-plugin.complete",
         pluginKey: key,
+        requestId,
         result: result.ok ? "ok" : "failed",
         state: result.state,
         durationMs: Date.now() - beginAt,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "start-plugin.complete",
+          outcome: result.ok ? "success" : "error",
+        },
       });
 
       return result;
@@ -1008,11 +1299,18 @@ export class PluginsManager {
       this.logError("start plugin failed", {
         action: "start-plugin.error",
         pluginKey: key,
+        requestId,
         result: "failed",
         durationMs: Date.now() - beginAt,
         error: toErrorMessageSafe(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "start-plugin.complete",
+          outcome: "error",
+        },
       });
-      return this.handleLifecycleError(key, "ONLINE_FAILED", error);
+      return this.handleLifecycleError(key, "ONLINE_FAILED", error, requestId);
     }
   }
 
@@ -1176,7 +1474,8 @@ export class PluginsManager {
   private handleLifecycleError(
     key: PluginKey,
     code: keyof typeof PluginsManagerErrorCode,
-    error: unknown
+    error: unknown,
+    requestId?: string
   ): LifecycleActionResult {
     const message = toErrorMessage(error);
     const runtime = this.ensureRuntime(key);
@@ -1187,9 +1486,18 @@ export class PluginsManager {
     this.logError("lifecycle action failed", {
       action: "lifecycle.error",
       pluginKey: key,
+      requestId: requestId ?? null,
       code,
       result: "failed",
       error: message,
+      observability: requestId
+        ? {
+            kind: "node",
+            requestId,
+            eventType: "lifecycle.error",
+            outcome: "error",
+          }
+        : { kind: "node" },
     });
 
     return {

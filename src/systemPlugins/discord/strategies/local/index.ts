@@ -14,6 +14,12 @@ import type {
   StrategyRestartOptions,
 } from "../../../../core/plugin-sdk";
 import { createKernelLogger } from "../../../../core/logger";
+import {
+  createObservabilityRequestId,
+  summarizeText,
+  summarizeUnknown,
+  withObservability,
+} from "../../../../core/logger/observability";
 import secretsManager, { SECRET_KEYS } from "../../../../core/secrets";
 
 import { TypingSessionManager } from "./typingSessionManager";
@@ -64,10 +70,46 @@ const logger = createKernelLogger("plugin-discord-local", {
 });
 
 function logDiscordInfo(message: string, meta: Record<string, unknown> = {}): void {
-  logger.info(message, {
-    stage: "discord",
-    ...meta,
-  });
+  const hasObservability = isRecord(meta.observability);
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "discord",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
+}
+
+function logDiscordRaw(
+  message: string,
+  requestId: string,
+  eventType: string,
+  meta: Record<string, unknown> = {}
+): void {
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "discord",
+        ...meta,
+      },
+      {
+        kind: "raw",
+        requestId,
+        eventType,
+      }
+    )
+  );
 }
 
 const conversationStream = new EventEmitter() as DiscordConversationStream;
@@ -204,6 +246,11 @@ async function replyToNonOwnerDirectMessage(message: Message): Promise<void> {
     await message.reply(runtime.nonOwnerDmReply);
   } catch (error) {
     logger.warn("failed to reply non-owner DM", {
+      stage: "discord",
+      observability: {
+        kind: "node",
+        eventType: "inbound.dm.non-owner.reply",
+      },
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -226,20 +273,43 @@ function getTypingManager(): TypingSessionManager {
 }
 
 async function handleInboundMessage(message: Message): Promise<void> {
+  const requestId = createObservabilityRequestId("discord:inbound", {
+    requestId: normalizeOptionalString(message.id),
+    channelId: normalizeOptionalString(message.channel?.id),
+    userId: normalizeOptionalString(message.author?.id),
+  });
   try {
     logDiscordInfo("discord inbound message received", {
       action: "inbound.receive",
+      requestId,
       channelId: message.channel?.id ?? null,
       guildId: message.guildId ?? null,
       messageId: message.id,
       authorId: message.author?.id ?? null,
+      content: summarizeText(message.content),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "inbound.receive",
+      },
+    });
+    logDiscordRaw("discord inbound raw payload", requestId, "inbound.payload.raw", {
       content: message.content,
+      messageId: message.id,
+      channelId: message.channel?.id ?? null,
+      authorId: message.author?.id ?? null,
     });
     if (message.author.bot) {
       logDiscordInfo("discord inbound skipped bot message", {
         action: "inbound.skip",
+        requestId,
         reason: "author_is_bot",
         messageId: message.id,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.filter",
+        },
       });
       return;
     }
@@ -247,8 +317,14 @@ async function handleInboundMessage(message: Message): Promise<void> {
     if (!message.content || message.content.trim().length === 0) {
       logDiscordInfo("discord inbound skipped empty content", {
         action: "inbound.skip",
+        requestId,
         reason: "empty_content",
         messageId: message.id,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.filter",
+        },
       });
       return;
     }
@@ -262,8 +338,14 @@ async function handleInboundMessage(message: Message): Promise<void> {
         await replyToNonOwnerDirectMessage(message);
         logDiscordInfo("discord inbound non-owner dm replied", {
           action: "inbound.dm.non-owner.reply",
+          requestId,
           messageId: message.id,
           authorId: message.author.id,
+          observability: {
+            kind: "node",
+            requestId,
+            eventType: "inbound.dm.reply",
+          },
         });
         return;
       }
@@ -275,7 +357,16 @@ async function handleInboundMessage(message: Message): Promise<void> {
       );
       logDiscordInfo("discord inbound owner dm emitted", {
         action: "inbound.emit",
+        requestId,
         source: "owner_dm",
+        eventSummary: summarizeUnknown(event),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.emit",
+        },
+      });
+      logDiscordRaw("discord inbound owner dm raw event", requestId, "inbound.emit.raw", {
         event,
       });
       return;
@@ -285,9 +376,15 @@ async function handleInboundMessage(message: Message): Promise<void> {
     if (runtime.channelId && message.channel.id !== runtime.channelId) {
       logDiscordInfo("discord inbound skipped by channel filter", {
         action: "inbound.skip",
+        requestId,
         reason: "channel_filter",
         configuredChannelId: runtime.channelId,
         messageChannelId: message.channel.id,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.filter",
+        },
       });
       return;
     }
@@ -297,7 +394,13 @@ async function handleInboundMessage(message: Message): Promise<void> {
     if (!botUserId) {
       logDiscordInfo("discord inbound skipped bot user unavailable", {
         action: "inbound.skip",
+        requestId,
         reason: "bot_user_unavailable",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.filter",
+        },
       });
       return;
     }
@@ -310,7 +413,16 @@ async function handleInboundMessage(message: Message): Promise<void> {
       );
       logDiscordInfo("discord inbound reply emitted", {
         action: "inbound.emit",
+        requestId,
         source: "reply",
+        eventSummary: summarizeUnknown(event),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.emit",
+        },
+      });
+      logDiscordRaw("discord inbound reply raw event", requestId, "inbound.emit.raw", {
         event,
       });
       return;
@@ -321,8 +433,14 @@ async function handleInboundMessage(message: Message): Promise<void> {
       if (!cleanedContent) {
         logDiscordInfo("discord inbound mention skipped empty cleaned content", {
           action: "inbound.skip",
+          requestId,
           reason: "mention_cleaned_empty",
           messageId: message.id,
+          observability: {
+            kind: "node",
+            requestId,
+            eventType: "inbound.filter",
+          },
         });
         return;
       }
@@ -334,19 +452,41 @@ async function handleInboundMessage(message: Message): Promise<void> {
       );
       logDiscordInfo("discord inbound mention emitted", {
         action: "inbound.emit",
+        requestId,
         source: "mention",
+        eventSummary: summarizeUnknown(event),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "inbound.emit",
+        },
+      });
+      logDiscordRaw("discord inbound mention raw event", requestId, "inbound.emit.raw", {
         event,
       });
       return;
     }
     logDiscordInfo("discord inbound skipped non-target message", {
       action: "inbound.skip",
+      requestId,
       reason: "not_mention_or_reply",
       messageId: message.id,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "inbound.filter",
+      },
     });
   } catch (error) {
     conversationStream.emit("error", error);
     logger.error("discord inbound message handling failed", {
+      stage: "discord",
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "inbound.complete",
+        outcome: "error",
+      },
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -367,11 +507,24 @@ function resolveAction(options: SendOptions): string {
 
 async function sendMessageInternal(options: SendOptions): Promise<DiscordMessageSendResult> {
   const beginAt = Date.now();
+  const payload = isRecord(options) ? options : {};
+  const requestId = createObservabilityRequestId("discord:send-message", {
+    requestId: normalizeOptionalString(payload.reqId),
+    channelId: normalizeChannelId(payload.channelId),
+  });
   logDiscordInfo("discord sendMessage begin", {
     action: "message.send.begin",
-    options: isRecord(options) ? options : { value: options },
+    requestId,
+    optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "message.send.begin",
+    },
   });
-  const payload = isRecord(options) ? options : {};
+  logDiscordRaw("discord sendMessage raw options", requestId, "message.send.options.raw", {
+    options: payload,
+  });
   const message = normalizeOptionalString(payload.message);
   if (!message) {
     throw new Error("message.send requires non-empty string field: message");
@@ -406,22 +559,46 @@ async function sendMessageInternal(options: SendOptions): Promise<DiscordMessage
   };
   logDiscordInfo("discord sendMessage complete", {
     action: "message.send.complete",
+    requestId,
     channelId,
-    message,
+    message: summarizeText(message),
     result,
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "message.send.complete",
+      outcome: "success",
+    },
+  });
+  logDiscordRaw("discord sendMessage raw content", requestId, "message.send.content.raw", {
+    channelId,
+    message,
   });
   return result;
 }
 
 async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): Promise<DiscordTypingControlResult> {
   const beginAt = Date.now();
+  const payload = isRecord(options) ? options : {};
+  const requestId = createObservabilityRequestId(`discord:typing-${mode}`, {
+    requestId: normalizeOptionalString(payload.reqId),
+    channelId: normalizeChannelId(payload.channelId),
+  });
   logDiscordInfo("discord typing control begin", {
     action: mode === "start" ? "typing.start.begin" : "typing.stop.begin",
+    requestId,
     mode,
-    options: isRecord(options) ? options : { value: options },
+    optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: mode === "start" ? "typing.start.begin" : "typing.stop.begin",
+    },
   });
-  const payload = isRecord(options) ? options : {};
+  logDiscordRaw("discord typing raw options", requestId, `typing.${mode}.options.raw`, {
+    options: payload,
+  });
   const channelId = normalizeChannelId(payload.channelId) ?? runtime.channelId;
   if (!channelId) {
     throw new Error(`${mode === "start" ? ACTION_TYPING_START : ACTION_TYPING_STOP} requires channelId or online channelId default`);
@@ -432,10 +609,17 @@ async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): 
     const result = await manager.start(channelId);
     logDiscordInfo("discord typing control complete", {
       action: "typing.start.complete",
+      requestId,
       mode,
       channelId,
       result,
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "typing.start.complete",
+        outcome: "success",
+      },
     });
     return result;
   }
@@ -443,10 +627,17 @@ async function sendTypingControl(options: SendOptions, mode: "start" | "stop"): 
   const result = await manager.stop(channelId);
   logDiscordInfo("discord typing control complete", {
     action: "typing.stop.complete",
+    requestId,
     mode,
     channelId,
     result,
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "typing.stop.complete",
+      outcome: "success",
+    },
   });
   return result;
 }
@@ -527,6 +718,10 @@ export default {
       };
 
       logger.info("discord plugin online", {
+        observability: {
+          kind: "node",
+          eventType: "online.state",
+        },
         channelId: channelId ?? "global",
         ownerUserId: ownerUserId ?? "unset",
         typingIntervalMs,
@@ -602,7 +797,13 @@ export default {
       typingSessionManager: null,
     };
 
-    logger.info("discord plugin offline");
+    logger.info("discord plugin offline", {
+      stage: "discord",
+      observability: {
+        kind: "node",
+        eventType: "offline.state",
+      },
+    });
     logDiscordInfo("discord offline complete", {
       action: "offline.complete",
       result: "ok",
@@ -618,7 +819,13 @@ export default {
     });
     await this.offline();
     await this.online(options);
-    logger.info("discord plugin restarted");
+    logger.info("discord plugin restarted", {
+      stage: "discord",
+      observability: {
+        kind: "node",
+        eventType: "restart.state",
+      },
+    });
     logDiscordInfo("discord restart complete", {
       action: "restart.complete",
       result: "ok",
@@ -678,8 +885,22 @@ export default {
     getRuntimeClient();
 
     const action = resolveAction(options);
+    const requestId = createObservabilityRequestId("discord:send-route", {
+      requestId: normalizeOptionalString((isRecord(options) ? options.reqId : null) ?? null),
+      channelId: normalizeChannelId(isRecord(options) ? options.channelId : null),
+    });
     logDiscordInfo("discord send route begin", {
       action: "send.route.begin",
+      requestId,
+      route: action,
+      optionsSummary: summarizeUnknown(isRecord(options) ? options : { value: options }),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.route.begin",
+      },
+    });
+    logDiscordRaw("discord send route raw options", requestId, "send.route.options.raw", {
       route: action,
       options: isRecord(options) ? options : { value: options },
     });

@@ -16,6 +16,10 @@ function readLines(filePath) {
     .filter(Boolean);
 }
 
+function readJsonLines(filePath) {
+  return readLines(filePath).map((line) => JSON.parse(line));
+}
+
 describe("tools/logger", () => {
   let tempRoot = "";
 
@@ -140,5 +144,174 @@ describe("tools/logger", () => {
     const textPath = path.join(tempRoot, sessionDirs[0].name, "log", "shutdown.log");
     const textLines = readLines(textPath);
     expect(textLines.join("\n")).toContain("line-before-shutdown");
+  });
+
+  it("buffers raw diagnostic logs in success path and clears without export", async () => {
+    const logger = loggerRuntime.getLogger("obs-success");
+    logger.info("raw-stream-chunk", {
+      observability: {
+        kind: "raw",
+        requestId: "req-success",
+        eventType: "stream.chunk",
+      },
+      chunk: "hello world",
+    });
+    logger.info("request complete", {
+      observability: {
+        kind: "node",
+        requestId: "req-success",
+        outcome: "success",
+      },
+    });
+
+    await loggerRuntime.flushLogs();
+    const sessionPath = loggerRuntime.getCurrentLogSessionPath();
+    const jsonPath = path.join(sessionPath, "json", "obs-success.json");
+    const jsonLines = readJsonLines(jsonPath);
+
+    expect(jsonLines.some((line) => line.message === "raw-stream-chunk")).toBe(false);
+    expect(
+      jsonLines.some(
+        (line) => line.message === "diagnostic context export begin"
+      )
+    ).toBe(false);
+    expect(jsonLines.some((line) => line.message === "request complete")).toBe(true);
+  });
+
+  it("exports only latest N raw traces on error outcome", async () => {
+    loggerRuntime.configureLogger({
+      observability: {
+        diagnosticRingSize: 2,
+      },
+    });
+    const logger = loggerRuntime.getLogger("obs-error");
+    logger.info("raw-1", {
+      observability: { kind: "raw", requestId: "req-error", eventType: "chunk" },
+      chunk: "one",
+    });
+    logger.info("raw-2", {
+      observability: { kind: "raw", requestId: "req-error", eventType: "chunk" },
+      chunk: "two",
+    });
+    logger.info("raw-3", {
+      observability: { kind: "raw", requestId: "req-error", eventType: "chunk" },
+      chunk: "three",
+    });
+    logger.error("request failed", {
+      observability: { kind: "node", requestId: "req-error", outcome: "error" },
+    });
+
+    await loggerRuntime.flushLogs();
+    const sessionPath = loggerRuntime.getCurrentLogSessionPath();
+    const jsonPath = path.join(sessionPath, "json", "obs-error.json");
+    const jsonLines = readJsonLines(jsonPath);
+    const traceLines = jsonLines.filter(
+      (line) => line?.meta?.action === "diagnostic.export.trace"
+    );
+    const traceMessages = traceLines.map((line) => line?.meta?.trace?.message?.preview);
+
+    expect(
+      jsonLines.some((line) => line.message === "diagnostic context export begin")
+    ).toBe(true);
+    expect(traceLines).toHaveLength(2);
+    expect(traceMessages).toContain("raw-2");
+    expect(traceMessages).toContain("raw-3");
+    expect(traceMessages).not.toContain("raw-1");
+  });
+
+  it("exports raw traces on abort and timeout outcomes", async () => {
+    const logger = loggerRuntime.getLogger("obs-timeout-abort");
+    logger.info("raw-abort", {
+      observability: { kind: "raw", requestId: "req-abort", eventType: "chunk" },
+      chunk: "abort-me",
+    });
+    logger.warn("request aborted", {
+      observability: { kind: "node", requestId: "req-abort", outcome: "abort" },
+    });
+
+    logger.info("raw-timeout", {
+      observability: { kind: "raw", requestId: "req-timeout", eventType: "chunk" },
+      chunk: "timeout-me",
+    });
+    logger.error("request timeout", {
+      observability: { kind: "node", requestId: "req-timeout", outcome: "timeout" },
+    });
+
+    await loggerRuntime.flushLogs();
+    const sessionPath = loggerRuntime.getCurrentLogSessionPath();
+    const jsonPath = path.join(sessionPath, "json", "obs-timeout-abort.json");
+    const jsonLines = readJsonLines(jsonPath);
+    const exportBeginLines = jsonLines.filter(
+      (line) => line.message === "diagnostic context export begin"
+    );
+    const triggerSet = new Set(exportBeginLines.map((line) => line.meta?.trigger));
+
+    expect(triggerSet.has("abort")).toBe(true);
+    expect(triggerSet.has("timeout")).toBe(true);
+  });
+
+  it("writes raw events directly when rawDirectExport is enabled", async () => {
+    loggerRuntime.configureLogger({
+      observability: {
+        rawDirectExport: true,
+      },
+    });
+    const logger = loggerRuntime.getLogger("obs-direct");
+    logger.info("raw-direct", {
+      observability: {
+        kind: "raw",
+        requestId: "req-direct",
+        eventType: "chunk",
+      },
+      chunk: "direct-content",
+    });
+
+    await loggerRuntime.flushLogs();
+    const sessionPath = loggerRuntime.getCurrentLogSessionPath();
+    const jsonPath = path.join(sessionPath, "json", "obs-direct.json");
+    const jsonLines = readJsonLines(jsonPath);
+
+    expect(jsonLines.some((line) => line.message === "raw-direct")).toBe(true);
+    expect(
+      jsonLines.some((line) => line.message === "diagnostic context export begin")
+    ).toBe(false);
+  });
+
+  it("forces raw direct export when LOG_STREAM_RAW=true", async () => {
+    const previous = process.env.LOG_STREAM_RAW;
+    try {
+      process.env.LOG_STREAM_RAW = "true";
+      loggerRuntime.configureLogger({
+        observability: {
+          rawDirectExport: false,
+        },
+      });
+
+      const logger = loggerRuntime.getLogger("obs-env-direct");
+      logger.info("raw-env-direct", {
+        observability: {
+          kind: "raw",
+          requestId: "req-env-direct",
+          eventType: "chunk",
+        },
+        chunk: "direct-by-env",
+      });
+
+      await loggerRuntime.flushLogs();
+      const sessionPath = loggerRuntime.getCurrentLogSessionPath();
+      const jsonPath = path.join(sessionPath, "json", "obs-env-direct.json");
+      const jsonLines = readJsonLines(jsonPath);
+
+      expect(jsonLines.some((line) => line.message === "raw-env-direct")).toBe(true);
+      expect(
+        jsonLines.some((line) => line.message === "diagnostic context export begin")
+      ).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.LOG_STREAM_RAW;
+      } else {
+        process.env.LOG_STREAM_RAW = previous;
+      }
+    }
   });
 });

@@ -1,4 +1,5 @@
 import { createKernelLogger } from "../../../../core/logger";
+import { createObservabilityRequestId } from "../../../../core/logger/observability";
 
 import type { DiscordTypingControlResult } from "./types";
 
@@ -68,6 +69,15 @@ export class TypingSessionManager {
     const timer = setInterval(() => {
       void sendTypingOnce(channelId, this.fetchChannel).catch((error) => {
         logger.warn("typing heartbeat failed", {
+          stage: "discord",
+          observability: {
+            kind: "node",
+            requestId: createObservabilityRequestId("discord:typing-heartbeat", {
+              channelId,
+            }),
+            eventType: "typing.heartbeat",
+            outcome: "error",
+          },
           channelId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -126,4 +136,3 @@ export class TypingSessionManager {
     this.sessions.clear();
   }
 }
-

@@ -9,6 +9,12 @@ import type {
   StrategyRestartOptions,
 } from "../../../../core/plugin-sdk";
 import { createKernelLogger } from "../../../../core/logger";
+import {
+  createObservabilityRequestId,
+  summarizeText,
+  summarizeUnknown,
+  withObservability,
+} from "../../../../core/logger/observability";
 
 import {
   DEFAULT_BACKUP_COUNT,
@@ -35,9 +41,102 @@ const logger = createKernelLogger("plugin-conversation-history-local", {
 });
 
 function logHistoryInfo(message: string, meta: Record<string, unknown> = {}): void {
-  logger.info(message, {
-    stage: "conversation-history",
-    ...meta,
+  const hasObservability = isRecord(meta.observability);
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "conversation-history",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
+}
+
+function logHistoryWarn(message: string, meta: Record<string, unknown> = {}): void {
+  const hasObservability = isRecord(meta.observability);
+  logger.warn(
+    message,
+    withObservability(
+      {
+        stage: "conversation-history",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
+}
+
+function logHistoryError(message: string, meta: Record<string, unknown> = {}): void {
+  const hasObservability = isRecord(meta.observability);
+  logger.error(
+    message,
+    withObservability(
+      {
+        stage: "conversation-history",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
+}
+
+function logHistoryRaw(
+  message: string,
+  requestId: string,
+  eventType: string,
+  meta: Record<string, unknown> = {}
+): void {
+  logger.info(
+    message,
+    withObservability(
+      {
+        stage: "conversation-history",
+        ...meta,
+      },
+      {
+        kind: "raw",
+        requestId,
+        eventType,
+      }
+    )
+  );
+}
+
+function createHistoryRequestId(
+  scope: string,
+  seed: {
+    requestId?: string | null;
+    conversationId?: string | null;
+    userId?: string | null;
+  } = {}
+): string {
+  return createObservabilityRequestId(`conversation-history:${scope}`, {
+    requestId: seed.requestId,
+    conversationId: seed.conversationId,
+    userId: seed.userId,
   });
 }
 
@@ -260,7 +359,8 @@ async function loadMessages(scopeKey: string): Promise<ConversationHistoryMessag
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code !== "ENOENT") {
-      logger.error("history load failed", {
+      logHistoryError("history load failed", {
+        action: "load.file.error",
         scopeKey,
         filePath,
         error: error instanceof Error ? error.message : String(error),
@@ -479,41 +579,95 @@ async function deleteScopeHistoryFiles(filePath: string): Promise<void> {
 async function appendInternal(input: ConversationHistoryAppendInput): Promise<void> {
   const beginAt = Date.now();
   const scopeKey = ensureScope(input);
+  const requestIdSeed = isRecord(input)
+    ? normalizeOptionalString((input as Record<string, unknown>).reqId)
+    : null;
+  const requestId = createHistoryRequestId("append", {
+    requestId: requestIdSeed,
+    conversationId: normalizeOptionalString(input.conversationId),
+    userId: normalizeOptionalString(input.userId),
+  });
   const role = normalizeRole(input.role);
   const content = normalizeContent(input.content);
   logHistoryInfo("history append begin", {
     action: "append.begin",
+    requestId,
     scopeKey,
     role,
+    content: summarizeText(content, 160),
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "append.begin",
+    },
+  });
+  logHistoryRaw("history append raw content", requestId, "append.content.raw", {
     content,
   });
 
-  await runScopeExclusive(scopeKey, async () => {
-    const history = await loadMessages(scopeKey);
-    history.push({
-      role,
-      content,
-      timestamp: Date.now(),
-    });
+  try {
+    await runScopeExclusive(scopeKey, async () => {
+      const history = await loadMessages(scopeKey);
+      history.push({
+        role,
+        content,
+        timestamp: Date.now(),
+      });
 
-    applyPruneToCache(scopeKey);
-    await saveMessages(scopeKey);
-  });
-  logHistoryInfo("history append complete", {
-    action: "append.complete",
-    scopeKey,
-    role,
-    durationMs: Date.now() - beginAt,
-  });
+      applyPruneToCache(scopeKey);
+      await saveMessages(scopeKey);
+    });
+    logHistoryInfo("history append complete", {
+      action: "append.complete",
+      requestId,
+      scopeKey,
+      role,
+      durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "append.complete",
+        outcome: "success",
+      },
+    });
+  } catch (error) {
+    logHistoryError("history append failed", {
+      action: "append.error",
+      requestId,
+      scopeKey,
+      role,
+      error: error instanceof Error ? error.message : String(error),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "append.complete",
+        outcome: "error",
+      },
+    });
+    throw error;
+  }
 }
 
 async function getRecentInternal(scope: ConversationScopeInput, limit?: unknown): Promise<ConversationHistoryMessage[]> {
   const beginAt = Date.now();
   const scopeKey = ensureScope(scope);
+  const requestId = createHistoryRequestId("recent", {
+    requestId: isRecord(scope)
+      ? normalizeOptionalString((scope as Record<string, unknown>).reqId)
+      : null,
+    conversationId: normalizeOptionalString(scope.conversationId),
+    userId: normalizeOptionalString(scope.userId),
+  });
   logHistoryInfo("history recent begin", {
     action: "recent.begin",
+    requestId,
     scopeKey,
     limit: limit ?? null,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "recent.begin",
+    },
   });
   return runScopeExclusive(scopeKey, async () => {
     await loadMessages(scopeKey);
@@ -526,19 +680,33 @@ async function getRecentInternal(scope: ConversationScopeInput, limit?: unknown)
     if (!normalizedLimit) {
       logHistoryInfo("history recent complete", {
         action: "recent.complete",
+        requestId,
         scopeKey,
         resultCount: history.length,
         durationMs: Date.now() - beginAt,
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "recent.complete",
+          outcome: "success",
+        },
       });
       return [...history];
     }
     const result = history.slice(-normalizedLimit);
     logHistoryInfo("history recent complete", {
       action: "recent.complete",
+      requestId,
       scopeKey,
       resultCount: result.length,
       requestedLimit: normalizedLimit,
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "recent.complete",
+        outcome: "success",
+      },
     });
     return result;
   });
@@ -547,9 +715,22 @@ async function getRecentInternal(scope: ConversationScopeInput, limit?: unknown)
 async function clearInternal(scope: ConversationScopeInput): Promise<void> {
   const beginAt = Date.now();
   const scopeKey = ensureScope(scope);
+  const requestId = createHistoryRequestId("clear", {
+    requestId: isRecord(scope)
+      ? normalizeOptionalString((scope as Record<string, unknown>).reqId)
+      : null,
+    conversationId: normalizeOptionalString(scope.conversationId),
+    userId: normalizeOptionalString(scope.userId),
+  });
   logHistoryInfo("history clear begin", {
     action: "clear.begin",
+    requestId,
     scopeKey,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "clear.begin",
+    },
   });
   await runScopeExclusive(scopeKey, async () => {
     runtime.cache.set(scopeKey, []);
@@ -558,17 +739,32 @@ async function clearInternal(scope: ConversationScopeInput): Promise<void> {
     try {
       await deleteScopeHistoryFiles(filePath);
     } catch (error) {
-      logger.error("history clear failed", {
+      logHistoryError("history clear failed", {
+        action: "clear.error",
+        requestId,
         scopeKey,
         filePath,
         error: error instanceof Error ? error.message : String(error),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "clear.complete",
+          outcome: "error",
+        },
       });
     }
   });
   logHistoryInfo("history clear complete", {
     action: "clear.complete",
+    requestId,
     scopeKey,
     durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "clear.complete",
+      outcome: "success",
+    },
   });
 }
 
@@ -577,9 +773,21 @@ export default {
 
   async online(options: StrategyOnlineOptions): Promise<void> {
     const beginAt = Date.now();
+    const requestId = createHistoryRequestId("online", {
+      requestId: normalizeOptionalString(isRecord(options) ? options.reqId : null),
+    });
     logHistoryInfo("conversation-history online begin", {
       action: "online.begin",
-      options,
+      requestId,
+      optionsSummary: summarizeUnknown(options),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "online.begin",
+      },
+    });
+    logHistoryRaw("conversation-history online raw options", requestId, "online.options.raw", {
+      options: isRecord(options) ? options : { value: options },
     });
     const typedOptions = (isRecord(options) ? options : {}) as ConversationHistoryOnlineOptions;
     assertLocalMethod(typedOptions.method ?? METHOD_LOCAL, "online");
@@ -591,50 +799,113 @@ export default {
 
     await ensureHistoryDirectory();
 
-    logger.info("conversation-history online", {
+    logHistoryInfo("conversation-history online", {
+      action: "online.state",
+      requestId,
       historyDir: runtime.config.historyDir,
       maxMessages: runtime.config.maxMessages,
       expireDays: runtime.config.expireDays,
       backupCount: runtime.config.backupCount,
       maxFileSize: runtime.config.maxFileSize,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "online.state",
+      },
     });
     logHistoryInfo("conversation-history online complete", {
       action: "online.complete",
+      requestId,
       result: "ok",
-      config: runtime.config,
+      config: summarizeUnknown(runtime.config),
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "online.complete",
+        outcome: "success",
+      },
     });
   },
 
   async offline(): Promise<void> {
     const beginAt = Date.now();
+    const requestId = createHistoryRequestId("offline");
     logHistoryInfo("conversation-history offline begin", {
       action: "offline.begin",
+      requestId,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "offline.begin",
+      },
     });
     runtime.online = false;
     runtime.cache.clear();
     runtime.scopeLocks.clear();
-    logger.info("conversation-history offline");
+    logHistoryInfo("conversation-history offline", {
+      action: "offline.state",
+      requestId,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "offline.state",
+      },
+    });
     logHistoryInfo("conversation-history offline complete", {
       action: "offline.complete",
+      requestId,
       result: "ok",
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "offline.complete",
+        outcome: "success",
+      },
     });
   },
 
   async restart(options: StrategyRestartOptions): Promise<void> {
     const beginAt = Date.now();
+    const requestId = createHistoryRequestId("restart", {
+      requestId: normalizeOptionalString(isRecord(options) ? options.reqId : null),
+    });
     logHistoryInfo("conversation-history restart begin", {
       action: "restart.begin",
-      options,
+      requestId,
+      optionsSummary: summarizeUnknown(options),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "restart.begin",
+      },
+    });
+    logHistoryRaw("conversation-history restart raw options", requestId, "restart.options.raw", {
+      options: isRecord(options) ? options : { value: options },
     });
     await this.offline();
     await this.online(options);
-    logger.info("conversation-history restarted");
+    logHistoryInfo("conversation-history restarted", {
+      action: "restart.state",
+      requestId,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "restart.state",
+      },
+    });
     logHistoryInfo("conversation-history restart complete", {
       action: "restart.complete",
+      requestId,
       result: "ok",
       durationMs: Date.now() - beginAt,
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "restart.complete",
+        outcome: "success",
+      },
     });
   },
 
@@ -675,13 +946,38 @@ export default {
   async send(options: SendOptions): Promise<unknown> {
     ensureOnline();
     const input = (isRecord(options) ? options : {}) as ConversationHistorySendInput;
+    const requestId = createHistoryRequestId("send", {
+      requestId: normalizeOptionalString(isRecord(options) ? options.reqId : null),
+      conversationId: normalizeOptionalString(input.conversationId),
+      userId: normalizeOptionalString(input.userId),
+    });
     logHistoryInfo("conversation-history send begin", {
       action: "send.begin",
+      requestId,
+      input: summarizeUnknown(input),
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.begin",
+      },
+    });
+    logHistoryRaw("conversation-history send raw input", requestId, "send.input.raw", {
       input,
     });
 
     const action = normalizeOptionalString(input.action);
     if (!action || !(action in HISTORY_ACTION_ALIAS_TO_OPERATION)) {
+      logHistoryWarn("conversation-history send invalid action", {
+        action: "send.error",
+        requestId,
+        inputAction: String(input.action),
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+          outcome: "error",
+        },
+      });
       throw new Error(`unsupported action: ${String(input.action)}`);
     }
 
@@ -690,8 +986,15 @@ export default {
       await appendInternal(input);
       logHistoryInfo("conversation-history send complete", {
         action: "send.complete",
+        requestId,
         operation,
         result: "ok",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+          outcome: "success",
+        },
       });
       return null;
     }
@@ -699,9 +1002,16 @@ export default {
       const result = await getRecentInternal(input, input.limit);
       logHistoryInfo("conversation-history send complete", {
         action: "send.complete",
+        requestId,
         operation,
         resultCount: result.length,
         result: "ok",
+        observability: {
+          kind: "node",
+          requestId,
+          eventType: "send.complete",
+          outcome: "success",
+        },
       });
       return result;
     }
@@ -709,8 +1019,15 @@ export default {
     await clearInternal(input);
     logHistoryInfo("conversation-history send complete", {
       action: "send.complete",
+      requestId,
       operation,
       result: "ok",
+      observability: {
+        kind: "node",
+        requestId,
+        eventType: "send.complete",
+        outcome: "success",
+      },
     });
     return null;
   },

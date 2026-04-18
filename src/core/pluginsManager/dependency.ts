@@ -1,5 +1,6 @@
 /* 註解：依賴展開、依賴狀態判定與循環依賴偵測。 */
 import type { PluginType } from "@core/plugin-sdk";
+import { withObservability } from "../logger/observability";
 
 import type {
   DependencyComponentMap,
@@ -17,10 +18,27 @@ function logDependency(
   message: string,
   meta: Record<string, unknown>
 ): void {
-  logger?.info(message, {
-    stage: "dependency",
-    ...meta,
-  });
+  const hasObservability =
+    typeof meta.observability === "object"
+    && meta.observability !== null
+    && !Array.isArray(meta.observability);
+  logger?.info(
+    message,
+    withObservability(
+      {
+        stage: "dependency",
+        ...meta,
+      },
+      hasObservability
+        ? (meta.observability as {
+            kind: "node" | "raw";
+            requestId?: string;
+            eventType?: string;
+            outcome?: "success" | "error" | "abort" | "timeout";
+          })
+        : { kind: "node" }
+    )
+  );
 }
 
 function depKey(type: PluginType, name: string): PluginKey {
