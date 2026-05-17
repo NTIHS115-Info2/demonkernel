@@ -27,6 +27,11 @@
 - `redact?: boolean`
 - `redactionPatterns?: RegExp[]`
 - `console?: { enabled?: boolean; level?: LogLevel; levels?: LogLevel[] }`
+- `observability?: {`
+  - `diagnosticRingSize?: number`（預設 `50`）
+  - `diagnosticPreviewChars?: number`（預設 `160`）
+  - `rawDirectExport?: boolean`（預設 `false`，`LOG_STREAM_RAW=true` 會強制為直寫）
+`}`
 
 ### `getLogger(name, bindings?)`
 
@@ -80,6 +85,22 @@
 - `pid: number`
 - `hostname: string`
 - `err?: { name, message, stack, code?, cause? }`
+
+## `meta.observability` 控制欄位
+
+由呼叫端提供上下文，logger 內部消化，不會寫入一般業務 `meta`。
+
+- `kind: "node" | "raw"`
+- `requestId?: string`
+- `eventType?: string`
+- `outcome?: "success" | "error" | "abort" | "timeout"`
+
+行為：
+
+- `kind=raw`：預設暫存於 request ring buffer。
+- `kind=node`：照常寫入 `.log/.json`。
+- `outcome=error|abort|timeout`：導出該 request buffer。
+- `outcome=success`：清理該 request buffer。
 
 ## 最小可用範例
 

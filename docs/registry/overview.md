@@ -19,11 +19,11 @@ Registry 不負責：
 - tool decision
 - chat orchestration
 
-實際呼叫由使用方 plugin 自行執行：
+Registry 回傳的是 capability 專屬 provider methods，實際呼叫由使用方 plugin 自行執行：
 
 ```ts
 const provider = registry.resolve("system.echo.message");
-const result = await provider.send(payload);
+const result = await provider.echoMessage(payload);
 ```
 
 ## 3. 與 CapabilitiesManager 的分工
@@ -38,7 +38,7 @@ Registry 註冊時會驗證 capability id 必須已存在於 `CapabilitiesManage
 `pluginsManager` 負責 plugin lifecycle 與 registry 串接：
 
 1. `discoverPlugins()`：重建 capability 描述並清理舊映射。
-2. plugin `online` 成功後：註冊 provider 到 registry。
+2. plugin `online` 成功後：由 `getCapabilityBindings()` 建立 provider，註冊到 registry。
 3. plugin `offline` 成功後：移除 provider 映射。
 4. plugin `restart`：先移除舊映射，成功後重新註冊。
 

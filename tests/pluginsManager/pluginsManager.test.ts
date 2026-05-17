@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import defaultCapabilitiesManager, { CapabilitiesManager } from "../../src/core/capabilities";
 import { CapabilityRegistry } from "../../src/core/registry";
@@ -30,6 +30,10 @@ type FakePluginOptions = {
   throwOnState?: boolean;
   onlineDelayMs?: number;
   invalidPriorityField?: boolean;
+  omitCapabilityBindings?: boolean;
+  overrideCapabilityBindingIds?: string[];
+  bindingProviderWithoutMethods?: boolean;
+  bindingCreateProviderNonFunction?: boolean;
 };
 
 function createTempPluginRoot(): { root: string; skillPath: string; systemPath: string } {
@@ -50,6 +54,25 @@ function writeJson(filePath: string, value: unknown): void {
 function createFakePlugin(basePath: string, options: FakePluginOptions): void {
   const pluginDir = path.join(basePath, options.name);
   fs.mkdirSync(pluginDir, { recursive: true });
+  const declaredCapabilityIds = (options.capabilities?.provides ?? [])
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry;
+      }
+
+      if (entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string") {
+        return (entry as { id: string }).id;
+      }
+
+      return "";
+    })
+    .filter((id) => id.trim().length > 0);
+  const bindingCapabilityIds = options.overrideCapabilityBindingIds ?? declaredCapabilityIds;
+  const shouldEmitCapabilityBindings = (
+    options.type === "system"
+    && declaredCapabilityIds.length > 0
+    && !options.omitCapabilityBindings
+  );
 
   const runtime: Record<string, unknown> = {
     startupWeight: options.startupWeight ?? 0,
@@ -132,6 +155,22 @@ module.exports = {
     }
     return payload;
   },
+${shouldEmitCapabilityBindings ? `
+  getCapabilityBindings() {
+    const capabilityIds = ${JSON.stringify(bindingCapabilityIds)};
+    return capabilityIds.map((capabilityId) => ({
+      capabilityId,
+${options.bindingCreateProviderNonFunction ? `
+      createProvider: null,` : `
+      createProvider(pluginInstance) {
+${options.bindingProviderWithoutMethods ? `
+        return {};` : `
+        return {
+          echoMessage: (payload) => pluginInstance.send(payload),
+        };`}
+      },`}
+    }));
+  },` : ""}
 };
 `;
 
@@ -164,6 +203,20 @@ describe("pluginsManager", () => {
         warn: () => undefined,
         error: () => undefined,
       },
+      capabilitiesManager,
+      capabilityRegistry,
+    });
+  }
+
+  function createManagerWithLogger(logger: {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  }): PluginsManager {
+    return new PluginsManager({
+      skillPluginsPath: tempRoot.skillPath,
+      systemPluginsPath: tempRoot.systemPath,
+      logger,
       capabilitiesManager,
       capabilityRegistry,
     });
@@ -569,6 +622,44 @@ describe("pluginsManager", () => {
     expect(failure?.reason).toContain("version mismatch");
   });
 
+  it("emits structured manager/dependency logs during orchestration failure", async () => {
+    createFakePlugin(tempRoot.skillPath, {
+      name: "dep",
+      type: "skill",
+      version: "1.0.1",
+    });
+
+    createFakePlugin(tempRoot.skillPath, {
+      name: "consumer",
+      type: "skill",
+      dependencies: {
+        skill: { dep: "1.0.0" },
+      },
+    });
+
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const manager = createManagerWithLogger(logger);
+    manager.discoverPlugins();
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.failed.some((item) => item.key === "skill:consumer")).toBe(true);
+
+    const infoMetas = logger.info.mock.calls
+      .map((call) => call[1] as { stage?: unknown; action?: unknown } | undefined)
+      .filter((meta): meta is { stage?: unknown; action?: unknown } => Boolean(meta));
+
+    expect(infoMetas.some((meta) => meta.stage === "manager" && meta.action === "online-many.begin")).toBe(true);
+    expect(infoMetas.some((meta) => meta.stage === "manager" && meta.action === "online-many.wave.begin")).toBe(true);
+    expect(infoMetas.some((meta) => meta.stage === "dependency" && meta.action === "evaluate.failed")).toBe(true);
+  });
+
   it("captures lifecycle errors from plugin methods", async () => {
     createFakePlugin(tempRoot.skillPath, {
       name: "flaky",
@@ -624,7 +715,9 @@ describe("pluginsManager", () => {
 
     expect(capabilityRegistry.has("system.echo.message")).toBe(true);
     const provider = capabilityRegistry.resolve("system.echo.message");
-    await expect(provider.send({ message: "still-routable" })).resolves.toEqual({
+    await expect((provider as { echoMessage: (input: Record<string, unknown>) => Promise<unknown> }).echoMessage({
+      message: "still-routable",
+    })).resolves.toEqual({
       message: "still-routable",
     });
   });
@@ -674,7 +767,102 @@ describe("pluginsManager", () => {
     ]);
   });
 
-  it("registers capability provider after plugin online and allows direct send()", async () => {
+  it("fails online when system plugin provides capabilities without getCapabilityBindings()", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "missing-binding-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+      omitCapabilityBindings: true,
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const online = await manager.online("system:missing-binding-system", {
+      onlineOptions: { method: "local" },
+    });
+
+    expect(online.ok).toBe(false);
+    expect(online.error).toContain("getCapabilityBindings() is missing");
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+  });
+
+  it("fails online when capability bindings expose undeclared capability ids", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "mismatch-binding-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+      overrideCapabilityBindingIds: ["system.discord.message.send"],
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.started).toHaveLength(0);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].reason).toContain("undeclared capability");
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+  });
+
+  it("fails online when capability binding createProvider is not a function", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "invalid-create-provider-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+      bindingCreateProviderNonFunction: true,
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.started).toHaveLength(0);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].reason).toContain("createProvider must be a function");
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+  });
+
+  it("fails online when capability binding creates provider without callable methods", async () => {
+    createFakePlugin(tempRoot.systemPath, {
+      name: "empty-provider-system",
+      type: "system",
+      capabilities: {
+        provides: ["system.echo.message"],
+      },
+      bindingProviderWithoutMethods: true,
+    });
+
+    const manager = createManager();
+    const summary = manager.discoverPlugins();
+    expect(summary.invalid).toBe(0);
+
+    const report = await manager.onlineAll({
+      defaultOnlineOptions: { method: "local" },
+    });
+
+    expect(report.started).toHaveLength(0);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0].reason).toContain("callable method");
+    expect(capabilityRegistry.has("system.echo.message")).toBe(false);
+  });
+
+  it("registers capability provider after plugin online and allows direct method call", async () => {
     createFakePlugin(tempRoot.systemPath, {
       name: "provider-system",
       type: "system",
@@ -695,7 +883,9 @@ describe("pluginsManager", () => {
     expect(capabilityRegistry.has("system.echo.message")).toBe(true);
 
     const provider = capabilityRegistry.resolve("system.echo.message");
-    const result = await provider.send({ message: "hello registry" });
+    const result = await (
+      provider as { echoMessage: (input: Record<string, unknown>) => Promise<unknown> }
+    ).echoMessage({ message: "hello registry" });
     expect(result).toEqual({ message: "hello registry" });
   });
 

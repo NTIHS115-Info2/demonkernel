@@ -52,36 +52,67 @@ module.exports = {
   async offline() { online = false; },
   async restart(options) { await this.offline(); await this.online(options); },
   async state() { return { status: online ? 1 : 0 }; },
+  async streamChat() {
+    const emitter = new EventEmitter();
+    emitter.abort = () => emitter.emit("abort");
+    setTimeout(() => {
+      emitter.emit("data", "hello", { choices: [{ delta: { content: "hello" } }] }, null);
+      emitter.emit("end");
+    }, 0);
+    return emitter;
+  },
+  async listModels() {
+    return {
+      ok: true,
+      status: 200,
+      models: [{ id: "fixture-model" }],
+      raw: { data: [{ id: "fixture-model" }] }
+    };
+  },
+  async checkHealth() {
+    return {
+      ok: true,
+      status: 200,
+      message: "ok"
+    };
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.llm.remote.chat.stream",
+        createProvider(pluginInstance) {
+          return { streamChat: pluginInstance.streamChat.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.llm.remote.models.list",
+        createProvider(pluginInstance) {
+          return { listModels: pluginInstance.listModels.bind(pluginInstance) };
+        }
+      },
+      {
+        capabilityId: "system.llm.remote.health.check",
+        createProvider(pluginInstance) {
+          return { checkHealth: pluginInstance.checkHealth.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
   async send(payload) {
     const action = Array.isArray(payload) || Array.isArray(payload?.messages)
       ? "chat.stream"
       : payload?.action;
 
     if (action === "chat.stream" || action === "system.llm.remote.chat.stream") {
-      const emitter = new EventEmitter();
-      emitter.abort = () => emitter.emit("abort");
-      setTimeout(() => {
-        emitter.emit("data", "hello", { choices: [{ delta: { content: "hello" } }] }, null);
-        emitter.emit("end");
-      }, 0);
-      return emitter;
+      return this.streamChat(payload);
     }
 
     if (action === "models.list" || action === "system.llm.remote.models.list") {
-      return {
-        ok: true,
-        status: 200,
-        models: [{ id: "fixture-model" }],
-        raw: { data: [{ id: "fixture-model" }] }
-      };
+      return this.listModels(payload);
     }
 
     if (action === "health.check" || action === "system.llm.remote.health.check") {
-      return {
-        ok: true,
-        status: 200,
-        message: "ok"
-      };
+      return this.checkHealth(payload);
     }
 
     throw new Error("unsupported action");
@@ -134,8 +165,8 @@ describe("pluginsManager integration: llm-remote-gateway capabilities", () => {
       "system.llm.remote.models.list",
     ]);
     const capabilityById = new Map(gatewayCapabilities.map((capability) => [capability.id, capability]));
-    expect(capabilityById.get("system.llm.remote.models.list")?.input.required).toContain("action");
-    expect(capabilityById.get("system.llm.remote.health.check")?.input.required).toContain("action");
+    expect(capabilityById.get("system.llm.remote.models.list")?.version).toBe("2.0.0");
+    expect(capabilityById.get("system.llm.remote.health.check")?.version).toBe("2.0.0");
 
     const online = await manager.online("system:llm-remote-gateway", {
       onlineOptions: {
@@ -149,22 +180,28 @@ describe("pluginsManager integration: llm-remote-gateway capabilities", () => {
     const modelsProvider = capabilityRegistry.resolve("system.llm.remote.models.list");
     const healthProvider = capabilityRegistry.resolve("system.llm.remote.health.check");
 
-    const chatResult = await chatProvider.send({
-      action: "system.llm.remote.chat.stream",
+    const chatResult = await (
+      chatProvider as {
+        streamChat: (input: { messages: Array<{ role: string; content: string }> }) => Promise<{
+          on?: (...args: unknown[]) => unknown;
+          abort?: () => void;
+        }>;
+      }
+    ).streamChat({
       messages: [{ role: "user", content: "hello" }],
-    }) as { on?: (...args: unknown[]) => unknown; abort?: () => void };
+    });
     expect(typeof chatResult.on).toBe("function");
     expect(typeof chatResult.abort).toBe("function");
 
-    const modelsResult = await modelsProvider.send({
-      action: "system.llm.remote.models.list",
-    }) as { ok: boolean; status: number };
+    const modelsResult = await (
+      modelsProvider as { listModels: () => Promise<{ ok: boolean; status: number }> }
+    ).listModels();
     expect(modelsResult.ok).toBe(true);
     expect(modelsResult.status).toBe(200);
 
-    const healthResult = await healthProvider.send({
-      action: "system.llm.remote.health.check",
-    }) as { ok: boolean; status: number; message: string };
+    const healthResult = await (
+      healthProvider as { checkHealth: () => Promise<{ ok: boolean; status: number; message: string }> }
+    ).checkHealth();
     expect(healthResult.ok).toBe(true);
     expect(healthResult.status).toBe(200);
     expect(healthResult.message).toBe("ok");

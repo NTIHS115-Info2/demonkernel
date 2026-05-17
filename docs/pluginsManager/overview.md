@@ -10,6 +10,7 @@
 - 非同步上線：依賴感知、同波並行。
 - 循環依賴（SCC）支援：依 `startupWeight` 分波啟動。
 - 管理器統一處理 lifecycle throw。
+- 管理 capability provider 綁定（`getCapabilityBindings()` -> registry）。
 
 ## 2. 啟動前提
 
@@ -46,6 +47,11 @@ const report = await pluginsManager.onlineAll({
 - `getInvalidPlugins()`：無效插件與原因。
 - `getRuntimeStatus()`：執行期狀態（online/error/blocked）。
 - `getStartupReport()`：最近一次上線結果。
+
+capability 行為：
+
+- system 插件若宣告 `capabilities.provides`，online 後必須提供對應 binding。
+- registry 只暴露 capability-bound provider methods（非 `provider.send(action)`）。
 
 ## 6. 關機
 

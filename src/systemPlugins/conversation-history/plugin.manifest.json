@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "name": "conversation-history",
+    "version": "1.1.1",
+    "description": "Conversation context/transcript store for appending, querying recent messages, and clearing history.",
+    "type": "system",
+    "entry": "index.js"
+  },
+  "runtime": {
+    "startupWeight": 25,
+    "method": ["local"],
+    "onlineOptions": {
+      "oneOf": [
+        {
+          "when": { "method": "local" },
+          "schema": {
+            "method": { "type": "string", "enum": ["local"] },
+            "historyDir": { "type": "string", "optional": true },
+            "maxMessages": { "type": "number", "optional": true },
+            "expireDays": { "type": "number", "optional": true },
+            "backupCount": { "type": "number", "optional": true },
+            "maxFileSize": { "type": "number", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "1000": "未知錯誤 / Unknown error",
+      "1001": "輸入無效 / Invalid input",
+      "1002": "歷史讀寫失敗 / History read-write failed"
+    }
+  },
+  "dependencies": {
+    "system": {},
+    "skill": {}
+  },
+  "io": {
+    "input": {
+      "action": "history.append | history.recent | history.clear",
+      "conversationId": "string (optional)",
+      "userId": "string (optional)"
+    },
+    "output": {
+      "history.recent": "Array<{ role, content, timestamp }>",
+      "history.append": "null",
+      "history.clear": "null"
+    },
+    "examples": [
+      {
+        "input": {
+          "action": "history.append",
+          "conversationId": "channel-1",
+          "role": "user",
+          "content": "hello"
+        },
+        "output": null
+      }
+    ]
+  },
+  "capabilities": {
+    "provides": [
+      {
+        "id": "system.conversation.history.append",
+        "displayName": "Conversation History Append",
+        "description": "Append one transcript message into scoped conversation history.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "conversationId": { "type": "string" },
+            "userId": { "type": "string" },
+            "role": {
+              "type": "string",
+              "enum": ["system", "user", "assistant", "tool"]
+            },
+            "content": { "type": "string" }
+          },
+          "required": ["role", "content"],
+          "additionalProperties": false
+        },
+        "output": {
+          "type": ["null", "object"],
+          "additionalProperties": true
+        }
+      },
+      {
+        "id": "system.conversation.history.recent",
+        "displayName": "Conversation History Recent",
+        "description": "Read recent transcript messages with prune applied.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "conversationId": { "type": "string" },
+            "userId": { "type": "string" },
+            "limit": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["system", "user", "assistant", "tool"]
+              },
+              "content": { "type": "string" },
+              "timestamp": { "type": "number" }
+            },
+            "required": ["role", "content", "timestamp"],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "id": "system.conversation.history.clear",
+        "displayName": "Conversation History Clear",
+        "description": "Clear one scoped conversation history cache, main file, and rotated backups.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "conversationId": { "type": "string" },
+            "userId": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "output": {
+          "type": ["null", "object"],
+          "additionalProperties": true
+        }
+      }
+    ]
+  }
+}

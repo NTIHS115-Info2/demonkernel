@@ -36,8 +36,8 @@ export = {
     return { status: online ? 1 : 0 };
   },
 
-  async send(options: SendOptions): Promise<unknown> {
-    logger.info("system example plugin(remote) send with options", { options });
+  async echoMessage(options: SendOptions): Promise<unknown> {
+    logger.info("system example plugin(remote) echoMessage with options", { options });
     const message = options.message;
     if (typeof message !== "string") {
       throw new Error("payload.message must be a string");
@@ -47,5 +47,10 @@ export = {
       reply: message,
       method: "remote",
     };
+  },
+
+  async send(options: SendOptions): Promise<unknown> {
+    logger.info("system example plugin(remote) send with options", { options });
+    return this.echoMessage(options);
   },
 };

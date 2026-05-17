@@ -38,8 +38,14 @@ src/core/plugin-sdk/
 - `restart(options): Promise<void>`
 - `state(): Promise<{ status: StateCode }>`
 - `send(options): Promise<unknown>`
+- `getCapabilityBindings?(): CapabilityBinding[]`
 
 失敗時不回傳 `{ ok:false }`，直接 throw。
+
+說明：
+
+- `send()` 保留為 plugin-level 入口（例如 manager 手動呼叫）。
+- capability routing 改由 `getCapabilityBindings()` 提供 capability 專屬 provider methods，不再依賴 `provider.send({ action })`。
 
 ## 3. 驗證工具
 

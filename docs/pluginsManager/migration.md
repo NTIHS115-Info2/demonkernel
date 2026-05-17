@@ -9,6 +9,7 @@
 2. 插件 lifecycle 改為 throw-only；manager 統一捕捉錯誤。
 3. 不再提供 LLM 專屬 API（`StartLLMTool`、`SetExceptionLLMTool`）。
 4. 不再包含 `expressApp` 注入責任。
+5. capability provider 路由不再使用 `provider.send({ action })`，改為 capability 專屬 provider methods + `getCapabilityBindings()`。
 
 ## 2. ID 與命名
 
@@ -48,5 +49,7 @@
 
 1. 先改所有 manifest：`priority -> startupWeight`。
 2. 把插件 lifecycle 改為 throw-only。
-3. 將啟動入口改為新 manager。
-4. 補齊依賴版本與多依賴/SCC 測試。
+3. 針對有 `capabilities.provides` 的 system 插件實作 `getCapabilityBindings()`。
+4. 將 capability consumer 改為呼叫 provider methods（例如 `sendMessage()`、`streamChat()`）。
+5. 將啟動入口改為新 manager。
+6. 補齊依賴版本與多依賴/SCC 測試。

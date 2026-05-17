@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "example",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "description": "this is an example system plugin",
     "type": "system",
     "entry": "index.js"

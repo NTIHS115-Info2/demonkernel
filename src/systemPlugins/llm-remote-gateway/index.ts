@@ -1,4 +1,5 @@
 import type {
+  CapabilityBinding,
   OnlineOptions,
   RestartOptions,
   SendOptions,
@@ -6,6 +7,12 @@ import type {
 } from "../../core/plugin-sdk";
 
 import strategies from "./strategies";
+import type {
+  ChatStreamEmitter,
+  HealthCheckResult,
+  ModelsListResult,
+  RemoteSendOptions,
+} from "./strategies/remote/types";
 
 const METHOD_REMOTE = "remote" as const;
 
@@ -13,6 +20,44 @@ function assertRemoteMethod(method: unknown, operation: string): asserts method 
   if (method !== METHOD_REMOTE) {
     throw new Error(`${operation} requires method="remote"`);
   }
+}
+
+type GatewayProviderHost = {
+  streamChat(input: RemoteSendOptions): Promise<ChatStreamEmitter>;
+  listModels(input?: Record<string, unknown>): Promise<ModelsListResult>;
+  checkHealth(input?: Record<string, unknown>): Promise<HealthCheckResult>;
+};
+
+function createCapabilityBindings(): CapabilityBinding[] {
+  return [
+    {
+      capabilityId: "system.llm.remote.chat.stream",
+      createProvider(pluginInstance: unknown) {
+        const plugin = pluginInstance as GatewayProviderHost;
+        return {
+          streamChat: plugin.streamChat.bind(plugin),
+        };
+      },
+    },
+    {
+      capabilityId: "system.llm.remote.models.list",
+      createProvider(pluginInstance: unknown) {
+        const plugin = pluginInstance as GatewayProviderHost;
+        return {
+          listModels: plugin.listModels.bind(plugin),
+        };
+      },
+    },
+    {
+      capabilityId: "system.llm.remote.health.check",
+      createProvider(pluginInstance: unknown) {
+        const plugin = pluginInstance as GatewayProviderHost;
+        return {
+          checkHealth: plugin.checkHealth.bind(plugin),
+        };
+      },
+    },
+  ];
 }
 
 export default {
@@ -34,7 +79,23 @@ export default {
     return strategies.remote.state();
   },
 
+  async streamChat(input: RemoteSendOptions): Promise<ChatStreamEmitter> {
+    return strategies.remote.streamChat(input);
+  },
+
+  async listModels(input?: Record<string, unknown>): Promise<ModelsListResult> {
+    return strategies.remote.listModels(input);
+  },
+
+  async checkHealth(input?: Record<string, unknown>): Promise<HealthCheckResult> {
+    return strategies.remote.checkHealth(input);
+  },
+
   async send(options: SendOptions): Promise<unknown> {
     return strategies.remote.send(options);
+  },
+
+  getCapabilityBindings(): CapabilityBinding[] {
+    return createCapabilityBindings();
   },
 };

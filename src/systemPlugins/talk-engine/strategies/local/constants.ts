@@ -14,7 +14,10 @@ export const CAPABILITY_DISCORD_STREAM = "system.discord.conversation.stream";
 export const CAPABILITY_DISCORD_SEND = "system.discord.message.send";
 export const CAPABILITY_DISCORD_TYPING_START = "system.discord.typing.start";
 export const CAPABILITY_DISCORD_TYPING_STOP = "system.discord.typing.stop";
+export const CAPABILITY_CONVERSATION_HISTORY_APPEND = "system.conversation.history.append";
+export const CAPABILITY_CONVERSATION_HISTORY_RECENT = "system.conversation.history.recent";
+export const CAPABILITY_CONVERSATION_HISTORY_CLEAR = "system.conversation.history.clear";
 
 export const DEFAULT_RELAY_ENABLED = true;
 export const DEFAULT_RELAY_ERROR_REPLY = "目前無法回覆，請稍後再試。";
-
+export const DEFAULT_HISTORY_LIMIT = 50;

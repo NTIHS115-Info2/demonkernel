@@ -58,6 +58,7 @@
 1. `discoverPlugins()` 讀取每個 `plugin.manifest.json`。
 2. system 插件的 `capabilities.provides` 會被轉交給 `CapabilitiesManager.registerFromManifest()`。
 3. 能力驗證或註冊失敗時，插件會被標記為 invalid。
+4. plugin `online` 後，`pluginsManager` 會呼叫 `plugin.getCapabilityBindings()` 建立 capability-bound provider 並註冊到 `CapabilityRegistry`。
 
 ## 3. 查詢能力描述
 
@@ -85,6 +86,16 @@ manager.registerFromManifest({
 const providers = manager.listProviders("system.echo.message");
 ```
 
-## 4. README 同步要求
+## 4. Provider 綁定約定
+
+system 插件若宣告 `capabilities.provides`，必須實作：
+
+```ts
+getCapabilityBindings(): CapabilityBinding[]
+```
+
+每個 binding 需對應一個 `capabilityId`，並提供 `createProvider(pluginInstance)`，回傳 capability 專屬 methods。
+
+## 5. README 同步要求
 
 如果 system 插件新增或修改自帶能力表（`provides` 內的物件），必須同步更新該插件自己的 `README.md`，確保能力描述與文案一致。

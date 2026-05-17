@@ -1,10 +1,27 @@
 type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
+type ObservabilityKind = "node" | "raw";
+type ObservabilityOutcome = "success" | "error" | "abort" | "timeout";
+
+export type LoggerObservabilityOptions = {
+  diagnosticRingSize?: number;
+  diagnosticPreviewChars?: number;
+  rawDirectExport?: boolean;
+};
+
+export type LoggerObservabilityMeta = {
+  kind: ObservabilityKind;
+  requestId?: string;
+  eventType?: string;
+  outcome?: ObservabilityOutcome;
+};
+
 type LoggerOptions = {
   rootDir?: string;
   level?: LogLevel;
   redact?: boolean;
   redactionPatterns?: RegExp[];
+  observability?: LoggerObservabilityOptions;
   console?: {
     enabled?: boolean;
     level?: LogLevel;

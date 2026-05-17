@@ -17,7 +17,7 @@ describe("capability registry", () => {
 
   function createProvider() {
     return {
-      send: async (input: Record<string, unknown>) => input,
+      echoMessage: async (input: Record<string, unknown>) => input,
     };
   }
 
@@ -67,18 +67,18 @@ describe("capability registry", () => {
     ).toThrowError(CapabilityAlreadyRegisteredError);
   });
 
-  it("throws when provider is empty or missing send()", () => {
+  it("throws when provider is empty or missing callable methods", () => {
     const registry = createRegistry();
 
     expect(() =>
-      registry.register("system.echo.message", null as unknown as { send: () => Promise<unknown> }, {
+      registry.register("system.echo.message", null as unknown as { echoMessage: () => Promise<unknown> }, {
         pluginKey: "system:bad-provider",
         registeredAt: "2026-03-10T10:00:00.000Z",
       })
     ).toThrowError(InvalidCapabilityProviderError);
 
     expect(() =>
-      registry.register("system.echo.message", {} as unknown as { send: () => Promise<unknown> }, {
+      registry.register("system.echo.message", {} as unknown as { echoMessage: () => Promise<unknown> }, {
         pluginKey: "system:bad-provider",
         registeredAt: "2026-03-10T10:00:00.000Z",
       })

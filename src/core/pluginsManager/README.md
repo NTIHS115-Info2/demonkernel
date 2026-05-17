@@ -9,6 +9,7 @@
 2. 非同步上線（依賴感知、波次啟動、同波並行）。
 3. 統一生命週期錯誤回收（throw-only 插件契約）。
 4. 提供可觀測 API（registry、invalid、runtime、startup report）。
+5. 管理 capability provider 綁定（`getCapabilityBindings()`）。
 
 ## 目錄
 
@@ -28,6 +29,7 @@ src/core/pluginsManager/
 - 掃描來源：預設 `dist/skillPlugins`、`dist/systemPlugins`。
 - 生命週期狀態：`offline | starting | online | stopping | error | blocked`。
 - 依賴版本：`dependencies` 需精確版本匹配。
+- 有 `capabilities.provides` 的 system plugin 必須提供對應 capability bindings。
 
 ## 啟動流程
 

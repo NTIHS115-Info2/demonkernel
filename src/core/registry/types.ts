@@ -1,8 +1,6 @@
-import type { SendOptions } from "../plugin-sdk";
+import type { CapabilityProviderInstance } from "../plugin-sdk";
 
-export interface CapabilityProvider {
-  send(input: SendOptions): Promise<unknown>;
-}
+export type CapabilityProvider = CapabilityProviderInstance;
 
 export interface RegistryMetadata {
   pluginKey: string;

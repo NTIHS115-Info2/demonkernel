@@ -19,6 +19,9 @@ export type TalkSendInput = SendOptions & {
   action?: TalkActionInput;
   message?: unknown;
   talker?: unknown;
+  conversationId?: unknown;
+  userId?: unknown;
+  historyLimit?: unknown;
   model?: unknown;
   tools?: unknown;
   tool_choice?: unknown;
@@ -36,6 +39,9 @@ export interface NormalizedTalkInput {
   action: TalkAction;
   message: string;
   talker: string | null;
+  conversationId: string | null;
+  userId: string | null;
+  historyLimit: number | null;
   model?: string;
   tools?: unknown[];
   toolChoice?: unknown;
@@ -47,6 +53,17 @@ export interface NormalizedTalkInput {
   reqId?: string;
   reqIdHeader?: string;
   headers?: Record<string, string>;
+}
+
+export interface TalkPromptMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+}
+
+export interface HistoryPromptMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  timestamp: number;
 }
 
 export interface DiscordConversationEvent {
@@ -78,6 +95,46 @@ export interface TalkNoStreamResult {
   reply: string;
 }
 
+export interface LlmChatStreamProvider {
+  streamChat(input: Record<string, unknown>): Promise<LlmStreamEmitter>;
+}
+
+export interface ConversationHistoryAppendProvider {
+  appendMessage(input: {
+    conversationId?: string;
+    userId?: string;
+    role: "system" | "user" | "assistant" | "tool";
+    content: string;
+  }): Promise<void>;
+}
+
+export interface ConversationHistoryRecentProvider {
+  getRecentMessages(
+    scope: { conversationId?: string; userId?: string },
+    limit?: number
+  ): Promise<HistoryPromptMessage[]>;
+}
+
+export interface ConversationHistoryClearProvider {
+  clearConversation(scope: { conversationId?: string; userId?: string }): Promise<void>;
+}
+
+export interface DiscordConversationProvider {
+  openConversationStream(): Promise<DiscordConversationStream>;
+}
+
+export interface DiscordMessageSendProvider {
+  sendMessage(input: { channelId?: unknown; message?: unknown }): Promise<unknown>;
+}
+
+export interface DiscordTypingStartProvider {
+  startTyping(input: { channelId?: unknown }): Promise<unknown>;
+}
+
+export interface DiscordTypingStopProvider {
+  stopTyping(input: { channelId?: unknown }): Promise<unknown>;
+}
+
 export interface RelayRuntime {
   enabled: boolean;
   errorReply: string;
@@ -85,4 +142,3 @@ export interface RelayRuntime {
   dataListener: ((event: DiscordConversationEvent) => void) | null;
   errorListener: ((error: unknown) => void) | null;
 }
-

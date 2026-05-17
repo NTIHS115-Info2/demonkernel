@@ -21,6 +21,14 @@
 2. child/bindings 放追蹤欄位：`traceId`、`plugin`、`strategy`、`component`。
 3. `message` 保持簡潔，詳細內容放 `meta`。
 
+## Observability 分類（v0.15.2）
+
+- 重要節點用 `kind=node` 直接落盤。
+- 高頻/高成本明細改為 `kind=raw`，由 logger 內部 ring buffer 管理。
+- 請在 request 終點補 `outcome`：
+  - `success`：清理 buffer
+  - `error|abort|timeout`：導出 buffer 後清理
+
 ## 最小可用範例：`src/index.ts` 啟動流程
 
 ```ts
@@ -59,6 +67,26 @@ const logger = createKernelLogger("plugin-example-skill-local", {
 });
 
 logger.info("strategy online", { method: "local" });
+```
+
+## request-scoped 範例
+
+```ts
+const requestId = "talk:channel-1:123";
+
+logger.info("talk begin", {
+  observability: { kind: "node", requestId, eventType: "talk.begin" },
+  inputSummary: { messageLength: 32 },
+});
+
+logger.info("talk raw payload", {
+  observability: { kind: "raw", requestId, eventType: "talk.payload.raw" },
+  payload,
+});
+
+logger.info("talk complete", {
+  observability: { kind: "node", requestId, eventType: "talk.complete", outcome: "success" },
+});
 ```
 
 ## tools 邊界說明

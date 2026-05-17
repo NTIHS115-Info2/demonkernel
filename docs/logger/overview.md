@@ -20,6 +20,7 @@
 3. 每個 logger 同時輸出 `.log`（人讀）與 `.json`（JSON Lines）。
 4. 舊 session 目錄背景非同步壓縮成 `.tar.gz`，不阻塞主流程。
 5. 敏感資訊遮罩同時作用在文字與 JSON 輸出。
+6. 觀測診斷採 request-scoped ring buffer：`kind=raw` 先存 RAM，僅在異常時導出。
 
 ## 輸出目錄與檔案規則
 
@@ -36,6 +37,18 @@
 - console transport：僅輸出 `warn/error/fatal`
 - redaction：啟用（可透過 `configureLogger` 關閉）
 - 壓縮清理：只壓縮舊目錄，不自動刪除歷史 `.tar.gz`
+- observability：
+  - `diagnosticRingSize = 50`
+  - `diagnosticPreviewChars = 160`
+  - `rawDirectExport = false`（可由 `LOG_STREAM_RAW=true` 強制直寫）
+
+## Observability 契約（v0.15.2）
+
+- 外部模組傳入 `meta.observability`，logger 內部只做觀測策略，不做業務決策。
+- `kind=node`：正常落盤。
+- `kind=raw`：預設進 request ring buffer，不直接落盤。
+- `outcome=error|abort|timeout`：導出該 request 最近 N 筆 raw trace 後清理。
+- `outcome=success`：僅清理 buffer，不導出。
 
 ## 最小可用範例
 

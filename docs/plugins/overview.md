@@ -58,6 +58,11 @@ manifest 重點：
 插件 lifecycle（`online/offline/restart/send`）失敗時直接 throw，
 manager 端負責捕捉並更新 runtime 狀態。
 
+system capability 提供方式：
+
+- 宣告 `capabilities.provides` 的 system 插件，需實作 `getCapabilityBindings()`。
+- registry 解析後拿到的是 capability 專屬 provider methods（非 `send + action` 分流）。
+
 ## 6. Observability / Logger
 
 插件策略層建議直接使用 `@core/logger`：
