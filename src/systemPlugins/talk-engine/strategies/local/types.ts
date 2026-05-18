@@ -99,6 +99,10 @@ export interface LlmChatStreamProvider {
   streamChat(input: Record<string, unknown>): Promise<LlmStreamEmitter>;
 }
 
+export interface SystemPromptGetProvider {
+  getSystemPrompt(input: { state: string }): Promise<string>;
+}
+
 export interface ConversationHistoryAppendProvider {
   appendMessage(input: {
     conversationId?: string;

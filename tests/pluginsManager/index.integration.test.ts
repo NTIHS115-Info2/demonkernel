@@ -22,12 +22,12 @@ describe("src/index integration", () => {
     process.env.TALK_RELAY_ERROR_REPLY = "請稍後再試";
 
     vi.spyOn(pluginsManager, "discoverPlugins").mockReturnValue({
-      total: 4,
-      registered: 4,
+      total: 5,
+      registered: 5,
       invalid: 0,
       byType: {
         skill: { total: 0, registered: 0, invalid: 0 },
-        system: { total: 4, registered: 4, invalid: 0 },
+        system: { total: 5, registered: 5, invalid: 0 },
       },
     });
 
@@ -44,7 +44,7 @@ describe("src/index integration", () => {
 
     await run([]);
 
-    expect(onlineSpy).toHaveBeenCalledTimes(4);
+    expect(onlineSpy).toHaveBeenCalledTimes(5);
     expect(onlineSpy).toHaveBeenNthCalledWith(1, "system:llm-remote-gateway", {
       onlineOptions: {
         method: "remote",
@@ -62,7 +62,12 @@ describe("src/index integration", () => {
         method: "local",
       },
     });
-    expect(onlineSpy).toHaveBeenNthCalledWith(4, "system:talk-engine", {
+    expect(onlineSpy).toHaveBeenNthCalledWith(4, "system:system-prompt-manager", {
+      onlineOptions: {
+        method: "local",
+      },
+    });
+    expect(onlineSpy).toHaveBeenNthCalledWith(5, "system:talk-engine", {
       onlineOptions: {
         method: "local",
         relayEnabled: false,

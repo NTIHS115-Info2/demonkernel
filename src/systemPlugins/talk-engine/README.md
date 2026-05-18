@@ -1,6 +1,6 @@
 # systemPlugins/talk-engine
 
-`talk-engine` 是對話編排核心 plugin，依賴 `llm-remote-gateway`、`discord`、`conversation-history` 三個 capability providers，並內建 local 策略的 Prompt Composer。
+`talk-engine` 是對話編排核心 plugin，依賴 `system-prompt-manager`、`llm-remote-gateway`、`discord`、`conversation-history` capability providers，並內建 local 策略的 Prompt Composer。
 
 提供兩個 capability provider：
 
@@ -9,9 +9,10 @@
 
 ## 1. 版本與依賴
 
-- plugin version: `0.6.1`
+- plugin version: `0.7.2`
 - capability schema version: `2.1.0`
 - 依賴版本：
+  - `system:system-prompt-manager@0.1.2`
   - `system:llm-remote-gateway@1.3.1`
   - `system:discord@0.4.1`
   - `system:conversation-history@1.1.1`
@@ -26,7 +27,8 @@
 
 ## 3. Prompt 與 History 邊界
 
-- Prompt Composer 職責：把 `recent history + current user message` 組成 LLM messages 陣列。
+- Prompt Composer 職責：把 `system prompt + recent history + current user message` 組成 LLM messages 陣列。
+- system prompt 來源：固定向 `system-prompt-manager` 呼叫 `getSystemPrompt({ state: "common" })`，並放在 LLM messages 第一筆。
 - `talk-engine` 只消費 history provider，不直接管理儲存檔案。
 - 當輸入缺少 `conversationId` 與 `userId` 時，會維持舊相容路徑（不套用歷史）。
 - v1 非目標：

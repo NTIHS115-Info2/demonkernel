@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "name": "system-prompt-manager",
+    "version": "0.1.2",
+    "description": "File-backed system prompt provider for TalkEngine.",
+    "type": "system",
+    "entry": "index.js"
+  },
+  "runtime": {
+    "startupWeight": 20,
+    "method": ["local"],
+    "onlineOptions": {
+      "oneOf": [
+        {
+          "when": { "method": "local" },
+          "schema": {
+            "method": { "type": "string", "enum": ["local"] },
+            "promptDir": { "type": "string", "optional": true }
+          }
+        }
+      ]
+    },
+    "errorCode": {
+      "1000": "未知錯誤 / Unknown error",
+      "1001": "輸入無效 / Invalid input",
+      "1002": "提示詞讀取失敗 / Prompt read failed"
+    }
+  },
+  "dependencies": {
+    "system": {},
+    "skill": {}
+  },
+  "io": {
+    "input": {
+      "action": "system.prompt.manager.get",
+      "state": "string (upstream-defined; common is used by TalkEngine v0.1)"
+    },
+    "output": {
+      "system.prompt.manager.get": "string"
+    },
+    "examples": [
+      {
+        "input": {
+          "action": "system.prompt.manager.get",
+          "state": "common"
+        },
+        "output": "You are Demonkernel's runtime assistant."
+      }
+    ]
+  },
+  "capabilities": {
+    "provides": [
+      {
+        "id": "system.prompt.manager.get",
+        "displayName": "System Prompt Manager Get",
+        "description": "Return the system prompt for a TalkEngine state.",
+        "version": "1.0.0",
+        "input": {
+          "type": "object",
+          "properties": {
+            "state": { "type": "string" }
+          },
+          "required": ["state"],
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "string"
+        }
+      }
+    ]
+  }
+}

@@ -1,8 +1,8 @@
 {
   "meta": {
     "name": "talk-engine",
-    "version": "0.6.1",
-    "description": "Core conversation engine with built-in prompt composer and conversation-history integration, plus LLM gateway and Discord capability orchestration.",
+    "version": "0.7.2",
+    "description": "Core conversation engine with system prompt provider integration, prompt composition, conversation-history integration, LLM gateway and Discord capability orchestration.",
     "type": "system",
     "entry": "index.js"
   },
@@ -32,7 +32,8 @@
     "system": {
       "llm-remote-gateway": "1.3.1",
       "discord": "0.4.1",
-      "conversation-history": "1.1.1"
+      "conversation-history": "1.1.1",
+      "system-prompt-manager": "0.1.2"
     },
     "skill": {}
   },

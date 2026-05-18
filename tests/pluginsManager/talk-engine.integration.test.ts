@@ -417,6 +417,89 @@ module.exports = {
   fs.writeFileSync(path.join(pluginDir, "index.js"), moduleCode.trimStart(), "utf-8");
 }
 
+function writeSystemPromptManagerFixturePlugin(basePath: string): void {
+  const pluginDir = path.join(basePath, "system-prompt-manager");
+  fs.mkdirSync(pluginDir, { recursive: true });
+
+  writeJson(path.join(pluginDir, "plugin.manifest.json"), {
+    meta: {
+      name: "system-prompt-manager",
+      version: "0.1.2",
+      type: "system",
+      entry: "index.js",
+    },
+    runtime: {
+      startupWeight: 20,
+      method: ["local"],
+      onlineOptions: {
+        oneOf: [
+          {
+            when: { method: "local" },
+            schema: {
+              method: { type: "string", enum: ["local"] },
+            },
+          },
+        ],
+      },
+    },
+    dependencies: {
+      skill: {},
+      system: {},
+    },
+    capabilities: {
+      provides: [
+        {
+          id: "system.prompt.manager.get",
+          displayName: "System Prompt Manager Get",
+          description: "fixture",
+          version: "1.0.0",
+          input: {
+            type: "object",
+            properties: {},
+            required: [],
+            additionalProperties: true,
+          },
+          output: {
+            type: "string",
+          },
+        },
+      ],
+    },
+  });
+
+  const moduleCode = `
+let online = false;
+
+module.exports = {
+  async online() { online = true; },
+  async offline() { online = false; },
+  async restart(options) { await this.offline(); await this.online(options); },
+  async state() { return { status: online ? 1 : 0 }; },
+  async getSystemPrompt(payload) {
+    return "fixture-system-prompt:" + (payload?.state || "missing");
+  },
+  getCapabilityBindings() {
+    return [
+      {
+        capabilityId: "system.prompt.manager.get",
+        createProvider(pluginInstance) {
+          return { getSystemPrompt: pluginInstance.getSystemPrompt.bind(pluginInstance) };
+        }
+      }
+    ];
+  },
+  async send(payload) {
+    if (payload?.action === "system.prompt.manager.get") {
+      return this.getSystemPrompt(payload);
+    }
+    throw new Error("unsupported action");
+  }
+};
+`;
+
+  fs.writeFileSync(path.join(pluginDir, "index.js"), moduleCode.trimStart(), "utf-8");
+}
+
 function writeTalkEngineFixturePlugin(basePath: string): void {
   const pluginDir = path.join(basePath, "talk-engine");
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -498,6 +581,7 @@ describe("pluginsManager integration: talk-engine capabilities", () => {
     writeLlmFixturePlugin(tempRoot.systemPath);
     writeDiscordFixturePlugin(tempRoot.systemPath);
     writeConversationHistoryFixturePlugin(tempRoot.systemPath);
+    writeSystemPromptManagerFixturePlugin(tempRoot.systemPath);
     writeTalkEngineFixturePlugin(tempRoot.systemPath);
   });
 
@@ -529,6 +613,11 @@ describe("pluginsManager integration: talk-engine capabilities", () => {
       "system.talk.engine.nostream",
       "system.talk.engine.stream",
     ]);
+
+    const talkDescriptor = manager.getRegistrySnapshot().find((item) => item.key === "system:talk-engine");
+    expect(talkDescriptor?.dependencies.system).toEqual(expect.objectContaining({
+      "system-prompt-manager": "0.1.2",
+    }));
 
     const startup = await manager.onlineAll({
       defaultOnlineOptions: { method: "local" },

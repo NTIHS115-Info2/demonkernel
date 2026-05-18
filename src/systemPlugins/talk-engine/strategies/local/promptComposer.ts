@@ -6,6 +6,7 @@ import type {
 
 type PromptComposerInput = Pick<NormalizedTalkInput, "message" | "talker"> & {
   historyMessages?: HistoryPromptMessage[];
+  systemPrompt?: string | null;
 };
 
 function isPromptRole(value: unknown): value is TalkPromptMessage["role"] {
@@ -45,7 +46,13 @@ export function composePromptContent(input: PromptComposerInput): string {
 
 export function composePromptMessages(input: PromptComposerInput): TalkPromptMessage[] {
   const history = normalizeHistoryMessages(input.historyMessages);
+  const systemPrompt = typeof input.systemPrompt === "string" ? input.systemPrompt.trim() : "";
+  const systemMessages: TalkPromptMessage[] = systemPrompt.length > 0
+    ? [{ role: "system", content: systemPrompt }]
+    : [];
+
   return [
+    ...systemMessages,
     ...history,
     {
       role: "user",

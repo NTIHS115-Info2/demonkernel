@@ -7,3 +7,4 @@ coverage/
 logs/
 history/
 .agent/reports/
+src/systemPlugins/system-prompt-manager/assets/prompts/*.system.prompt.md

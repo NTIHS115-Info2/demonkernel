@@ -23,6 +23,7 @@ import {
   CAPABILITY_LLM_CHAT_STREAM,
   CAPABILITY_CONVERSATION_HISTORY_APPEND,
   CAPABILITY_CONVERSATION_HISTORY_RECENT,
+  CAPABILITY_SYSTEM_PROMPT_GET,
   DEFAULT_HISTORY_LIMIT,
   DEFAULT_RELAY_ENABLED,
   DEFAULT_RELAY_ERROR_REPLY,
@@ -46,6 +47,7 @@ import type {
   LlmStreamEmitter,
   NormalizedTalkInput,
   RelayRuntime,
+  SystemPromptGetProvider,
   TalkNoStreamResult,
   TalkOnlineOptions,
   TalkSendInput,
@@ -378,6 +380,14 @@ function resolveLlmProvider(): LlmChatStreamProvider {
   return provider;
 }
 
+function resolveSystemPromptProvider(): SystemPromptGetProvider {
+  const provider = resolveProvider(CAPABILITY_SYSTEM_PROMPT_GET) as SystemPromptGetProvider;
+  if (!provider || typeof provider.getSystemPrompt !== "function") {
+    throw new Error(`capability provider is invalid: ${CAPABILITY_SYSTEM_PROMPT_GET}`);
+  }
+  return provider;
+}
+
 function resolveDiscordConversationProvider(): DiscordConversationProvider {
   const provider = resolveProvider(CAPABILITY_DISCORD_STREAM) as DiscordConversationProvider;
   if (!provider || typeof provider.openConversationStream !== "function") {
@@ -631,6 +641,41 @@ async function loadHistoryForPromptSafe(input: NormalizedTalkInput): Promise<His
     });
     return [];
   }
+}
+
+async function loadSystemPromptForRequest(requestId: string): Promise<string> {
+  const beginAt = Date.now();
+  logTalkInfo("system prompt load begin", {
+    action: "system-prompt.load.begin",
+    requestId,
+    state: "common",
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "system-prompt.load.begin",
+    },
+  });
+
+  const provider = resolveSystemPromptProvider();
+  const prompt = await provider.getSystemPrompt({ state: "common" });
+  if (typeof prompt !== "string") {
+    throw new Error("system prompt provider returned non-string prompt");
+  }
+
+  logTalkInfo("system prompt load complete", {
+    action: "system-prompt.load.complete",
+    requestId,
+    state: "common",
+    prompt: summarizeText(prompt),
+    durationMs: Date.now() - beginAt,
+    observability: {
+      kind: "node",
+      requestId,
+      eventType: "system-prompt.load.complete",
+      outcome: "success",
+    },
+  });
+  return prompt;
 }
 
 async function appendHistoryMessageSafe(
@@ -962,12 +1007,14 @@ async function requestTalkStream(
     },
   });
   const llmProvider = resolveLlmProvider();
+  const systemPrompt = await loadSystemPromptForRequest(resolvedRequestId);
   const payload = buildGatewayPayload(
     input,
     composePromptMessages({
       message: input.message,
       talker: input.talker,
       historyMessages: promptMessages,
+      systemPrompt,
     })
   );
   logTalkInfo("request talk stream payload built", {

@@ -12,6 +12,8 @@ const CAPABILITY_DISCORD_TYPING_STOP = "system.discord.typing.stop";
 const CAPABILITY_HISTORY_APPEND = "system.conversation.history.append";
 const CAPABILITY_HISTORY_RECENT = "system.conversation.history.recent";
 const CAPABILITY_HISTORY_CLEAR = "system.conversation.history.clear";
+const CAPABILITY_SYSTEM_PROMPT_GET = "system.prompt.manager.get";
+const COMMON_SYSTEM_PROMPT = "Common system prompt from manager.";
 
 const registryMock = vi.hoisted(() => {
   const providers = new Map<string, Record<string, unknown>>();
@@ -175,6 +177,12 @@ function registerHistoryProviders(options: {
   });
 }
 
+function registerPromptManagerProvider(prompt = COMMON_SYSTEM_PROMPT): void {
+  registryMock.setProvider(CAPABILITY_SYSTEM_PROMPT_GET, {
+    getSystemPrompt: vi.fn(async () => prompt),
+  });
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 1200): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
@@ -190,6 +198,7 @@ describe("system plugin: talk-engine", () => {
     registryMock.reset();
     loggerMock.reset();
     registerHistoryProviders();
+    registerPromptManagerProvider();
   });
 
   afterEach(async () => {
@@ -246,10 +255,16 @@ describe("system plugin: talk-engine", () => {
     };
 
     expect(payload.model).toBe("gpt-test");
-    expect(payload.messages).toEqual([{
-      role: "user",
-      content: "<sender=tester>: hi there",
-    }]);
+    expect(payload.messages).toEqual([
+      {
+        role: "system",
+        content: COMMON_SYSTEM_PROMPT,
+      },
+      {
+        role: "user",
+        content: "<sender=tester>: hi there",
+      },
+    ]);
     expect(payload.params).toEqual({ temperature: 0.1 });
     expect(payload).not.toHaveProperty("action");
   });
@@ -282,9 +297,13 @@ describe("system plugin: talk-engine", () => {
       messages: Array<{ role: string; content: string }>;
     };
     expect(payload.messages).toEqual([
+      { role: "system", content: COMMON_SYSTEM_PROMPT },
       { role: "assistant", content: "previous answer" },
       { role: "user", content: "new question" },
     ]);
+
+    const promptProvider = registryMock.getProviderMethodMock(CAPABILITY_SYSTEM_PROMPT_GET, "getSystemPrompt");
+    expect(promptProvider).toHaveBeenCalledWith({ state: "common" });
 
     const appendMethod = registryMock.getProviderMethodMock(CAPABILITY_HISTORY_APPEND, "appendMessage");
     expect(appendMethod).toHaveBeenCalledWith({
@@ -414,8 +433,8 @@ describe("system plugin: talk-engine", () => {
     registryMock.setProvider(CAPABILITY_LLM_CHAT_STREAM, {
       streamChat: vi.fn(async (payload: Record<string, unknown>) => {
         callSequence.push("llm.send");
-        const messages = payload.messages as Array<{ content?: string }>;
-        const content = messages[0]?.content ?? "";
+        const messages = payload.messages as Array<{ role?: string; content?: string }>;
+        const content = messages.find((message) => message.role === "user")?.content ?? "";
         return createLlmEmitter({
           chunks: [`reply:${content}`],
         });

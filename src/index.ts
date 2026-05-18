@@ -251,6 +251,9 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<void>
       await onlineRequiredPlugin("system:conversation-history", { method: "local" });
       startedPlugins.push("system:conversation-history");
 
+      await onlineRequiredPlugin("system:system-prompt-manager", { method: "local" });
+      startedPlugins.push("system:system-prompt-manager");
+
       const talkEngineOptions: OnlineOptions = {
         method: "local",
         relayEnabled: cli.talkRelayEnabled,

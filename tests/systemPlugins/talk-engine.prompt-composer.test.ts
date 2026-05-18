@@ -57,4 +57,21 @@ describe("talk-engine local promptComposer", () => {
       { role: "user", content: "current" },
     ]);
   });
+
+  it("prepends the system prompt before history and current user message", () => {
+    const messages = composePromptMessages({
+      message: "current",
+      talker: null,
+      systemPrompt: "Common system prompt.",
+      historyMessages: [
+        { role: "assistant", content: "previous-reply", timestamp: 1 },
+      ],
+    });
+
+    expect(messages).toEqual([
+      { role: "system", content: "Common system prompt." },
+      { role: "assistant", content: "previous-reply" },
+      { role: "user", content: "current" },
+    ]);
+  });
 });
