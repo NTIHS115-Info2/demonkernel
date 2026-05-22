@@ -10,10 +10,12 @@
     "updatelog:ensure": "node tools/updatelog/cli.js ensure --staged",
     "updatelog:validate:staged": "node tools/updatelog/cli.js validate --staged",
     "updatelog:validate:push": "node tools/updatelog/cli.js validate --push",
+    "readme:sync-version": "node tools/updatelog/cli.js sync-readme-version",
+    "readme:check-version": "node tools/updatelog/cli.js check-readme-version",
     "prepare": "husky install"
   },
   "name": "demonkernel",
-  "version": "0.15.2",
+  "version": "0.18.2",
   "main": "index.js",
   "repository": "https://github.com/sandwichcookice/demonkernel.git",
   "license": "MIT",

@@ -15,6 +15,10 @@ const {
 const { renderUpdateLog } = require("./lib/markdown");
 const { validateUpdateFiles } = require("./lib/validate");
 const {
+  syncReadmeVersion,
+  checkReadmeVersion,
+} = require("./lib/readme-version");
+const {
   getCurrentBranch,
   getShortCommit,
   getStagedFiles,
@@ -67,6 +71,31 @@ async function main() {
       return;
     }
     console.log(`[updatelog] validate(${mode}) 通過`);
+    return;
+  }
+
+  if (command === "sync-readme-version") {
+    const result = syncReadmeVersion(ROOT);
+    console.log("[updatelog] README version sync");
+    console.log(`- previous: ${result.previousVersion || "(none)"}`);
+    console.log(`- latest: ${result.nextVersion}`);
+    console.log(`- changed: ${result.changed ? "yes" : "no"}`);
+    return;
+  }
+
+  if (command === "check-readme-version") {
+    const result = checkReadmeVersion(ROOT);
+    console.log(
+      `[updatelog] README version check ${result.ok ? "通過" : "失敗"}`
+    );
+    console.log(`- readme: ${result.readmeVersion || "(none)"}`);
+    console.log(`- latest: ${result.latestVersion}`);
+    if (result.error) {
+      console.log(`- error: ${result.error}`);
+    }
+    if (!result.ok) {
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -542,6 +571,8 @@ UpdateLog CLI
   node tools/updatelog/cli.js new [--category main|plugin] [--plugin-type skill|system] [--plugin-name <name>] [--version x.y.z] [--force]
   node tools/updatelog/cli.js ensure --staged
   node tools/updatelog/cli.js validate --staged|--push
+  node tools/updatelog/cli.js sync-readme-version
+  node tools/updatelog/cli.js check-readme-version
 
 常用參數:
   --summary "..."

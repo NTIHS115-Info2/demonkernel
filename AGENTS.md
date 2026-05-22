@@ -36,6 +36,8 @@ Agent reconnaissance reports 可暫存在 `.agent/reports/`，但任務結束時
 - `yarn updatelog:ensure` 檢查 staged 的非 UpdateLog 變更是否有對應 UpdateLog，並由 Husky pre-commit hook 強制執行。
 - `yarn updatelog:validate:staged` 驗證 staged UpdateLog coverage 與格式。
 - `yarn updatelog:validate:push` 驗證 push range 或 HEAD fallback。
+- `yarn readme:sync-version` 將 `README.md` 的版本 marker 同步到最新 Main UpdateLog。
+- `yarn readme:check-version` 驗證 `README.md` 的版本 marker 與最新 Main UpdateLog 一致。
 
 ## Coding Style 與 Naming Conventions
 
@@ -61,6 +63,14 @@ Plugin manifests 必須使用 `runtime.startupWeight`；不要重新引入已淘
 
 目前 system plugin 職責應保持分離：`llm-remote-gateway` 處理 OpenAI-compatible remote LLM access，`discord` 處理 Discord I/O，`conversation-history` 儲存 transcript history，`talk-engine` 跨 providers 編排 conversation flow。
 
+## README 與雙語文件同步
+
+根目錄入口文件分為英文版 `README.md` 與繁體中文版 `README.zh-TW.md`。兩份 README 必須以雙向連結互相指向，並維持相同章節順序、相同 repository facts、相同 command lists、相同 release marker value，以及等價的維護規範。英文版不是唯一真相；中文版也不是摘要版。
+
+任何更新只要改到 README、文件規範、UpdateLog workflow、ExecPlan workflow、專案結構、常用命令、plugin/system architecture 或 agent 行為規則，就必須同步更新兩份 README。不得只改其中一份。若某次更新判斷 README 不需調整，也必須在最終回報中明確說明已檢查且不需更新。
+
+每份 ExecPlan 的最後一個實作動作必須是 README consistency check：確認 `README.md` 與 `README.zh-TW.md` 都已反映本次變更，兩種語言內容等價，雙向連結存在，版本 marker 一致，並執行 `yarn readme:check-version`。若自動同步工具無法涵蓋 `README.zh-TW.md`，agent 必須手動檢查中文版 marker 與內容，並在 ExecPlan 的 `Artifacts and Notes` 記錄結果。
+
 ## Testing Guidelines
 
 Vitest 是測試框架。測試應放在對應的 `tests/<subsystem>/` 目錄。Focused unit tests 命名為 `*.test.ts`；integration coverage 使用 `*.integration.test.ts`，例如 `tests/pluginsManager` 中的既有模式。
@@ -76,9 +86,13 @@ Vitest 是測試框架。測試應放在對應的 `tests/<subsystem>/` 目錄。
 
 ## UpdateLog 與 Release Notes
 
-每次更新都必須建立或更新 UpdateLog。Agent 必須使用 `npm run updatelog:new`，或等價的 `node tools/updatelog/cli.js new`，產生更新紀錄；可再視情況使用 `npm run updatelog:validate:staged` 或 `npm run updatelog:validate:push` 驗證。Behavior changes、新增 plugins、capability contract changes、diagnostics/logging behavior changes、Discord/LLM behavior changes、secret-handling changes，以及 agent/documentation 規則變更都需要 UpdateLog。
+每次更新都必須建立或更新 UpdateLog。Agent 必須使用 `yarn updatelog:new`，或等價的 `node tools/updatelog/cli.js new`，產生更新紀錄；不得手動亂建不符合路徑規範的 UpdateLog。可再視情況使用 `yarn updatelog:validate:staged` 或 `yarn updatelog:validate:push` 驗證。Behavior changes、新增 plugins、capability contract changes、diagnostics/logging behavior changes、Discord/LLM behavior changes、secret-handling changes，以及 agent/documentation 規則變更都需要 UpdateLog。
 
 `Updates/Main` 是全域更新索引。每一次更新，不論 Major、Minor 或 Patch，都必須反映在 `Updates/Main`。Plugin 自身有行為變更時，除了 Main 全域紀錄，也應視情況新增或更新 `Updates/Plugins/{skill|system}/...`。
+
+新增或更新 Main UpdateLog 後，若 `README.md` 顯示版本落後於最新 Main UpdateLog，必須執行 `yarn readme:sync-version` 同步版本 marker。`package.json` 的 `version` 也是更新目標，必須與最新 Main UpdateLog 的 semantic version 對齊；現有 README sync/check 工具不會自動修改或檢查 `package.json`，agent 必須人工確認並在 ExecPlan 或 UpdateLog Notes 記錄。README 版本 marker 不應作為長期手動維護欄位；若同步工具失敗且必須手動修正，必須在 UpdateLog Notes 記錄原因。每次更新完成前，必須執行 `yarn readme:check-version`，確認 README 顯示版本與最新 Main UpdateLog 一致。
+
+最終回報必須列出已執行的 UpdateLog validation、README version check，以及雙語 README consistency check。若因任務 ownership 或工具限制無法修改 UpdateLog、更新 README 或執行驗證，也必須在最終回報中明確說明原因。
 
 版本號規則：
 
@@ -97,7 +111,7 @@ UpdateLog paths 必須遵循專案慣例，位於 `Updates/Main/...` 或 `Update
 
 ## Documentation Trust Order
 
-當來源互相衝突時，優先相信目前 machine-readable root config：`package.json`、`tsconfig.json`、`tsconfig.test.json`、`.editorconfig`、`.gitignore` 與 `eslint.config.js`。其次相信將要修改區域的 source files 與 tests。`docs/`、plugin READMEs、`Updates/` 與 active ExecPlan 中的 archived reconnaissance reports 適合用於導覽與理解歷史，但 implementation changes 前仍需用 source 驗證。Root `README.md` 目前是空檔，不應視為架構來源。
+當來源互相衝突時，優先相信目前 machine-readable root config：`package.json`、`tsconfig.json`、`tsconfig.test.json`、`.editorconfig`、`.gitignore` 與 `eslint.config.js`。其次相信將要修改區域的 source files 與 tests。`README.md`、`README.zh-TW.md`、`docs/`、plugin READMEs、`Updates/` 與 active ExecPlan 中的 archived reconnaissance reports 適合用於導覽與理解歷史，但 implementation changes 前仍需用 source 驗證。
 
 ## Commit 與 Pull Request Guidelines
 

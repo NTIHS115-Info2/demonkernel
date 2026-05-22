@@ -28,6 +28,8 @@
 
 每份 ExecPlan 都必須維護對應的 `Updates/Main` 更新紀錄。每次更新，不論是 Major、Minor 或 Patch，都必須反映在 `Updates/Main`。Agent 必須使用 `npm run updatelog:new`，或等價的 `node tools/updatelog/cli.js new`，產生或更新更新紀錄。
 
+每份 ExecPlan 的最後一個實作動作必須是 README consistency check。這個動作必須確認 `README.md` 與 `README.zh-TW.md` 都已反映本次變更，兩份文件互相連結，章節順序一致，repository facts、command lists、release marker value 與維護規範等價，並執行 `yarn readme:check-version`。如果本次更新不需要變更 README，也必須在 `Artifacts and Notes` 與最終回報中寫明已檢查且不需更新。
+
 每份 ExecPlan 都必須用白話定義所有專門術語。若一個詞不屬於一般語言，例如 daemon、middleware、registry、manifest、capability，第一次出現時必須說明它在本 repository 中對應到哪些檔案、模組或命令。
 
 目的與意圖必須優先。開頭要用幾句話說明這項工作為何對使用者或維護者有價值：完成後能做什麼以前不能做的事，以及如何看到它正在運作。接著再引導讀者完成具體步驟，包括要改哪些檔案、執行哪些命令、應觀察到什麼。
@@ -119,6 +121,19 @@ Patch (`0.0.*`) 跟隨同一份 ExecPlan 的後續補充任務。當 ExecPlan �
 
 `Updates/Main` 是全域更新索引；每一次更新，不論 Major、Minor 或 Patch，都必須反映在 `Updates/Main`。若 plugin 自身也有行為或契約變更，另視情況新增或更新 `Updates/Plugins/{skill|system}/...`。
 
+## README 雙語同步規則
+
+根目錄入口文件包含英文版 `README.md` 與繁體中文版 `README.zh-TW.md`。兩份 README 必須維持雙向連結、相同章節順序、相同 repository facts、相同 command lists、相同 release marker value，以及等價的維護規範。它們是同一份入口內容的不同語言版本，不可把中文版當摘要，也不可只更新英文版。
+
+撰寫或執行 ExecPlan 時，只要本次工作影響 project layout、architecture、plugins、commands、UpdateLog workflow、agent workflow、documentation trust order、testing guidance 或其他 README 會描述的內容，就必須把兩份 README 列入工作範圍。若判斷 README 不需改，仍要把檢查結果寫入 `Artifacts and Notes`。
+
+每份 ExecPlan 的 `Concrete Steps` 最後一個步驟必須是 README consistency check。該步驟應明確要求：
+
+    1. 檢查 `README.md` 與 `README.zh-TW.md` 互相連結。
+    2. 檢查兩份 README 的章節順序、事實、命令清單、版本 marker 與維護規範等價。
+    3. 執行 `yarn readme:check-version`。
+    4. 將檢查結果記錄到 `Artifacts and Notes` 與最終回報。
+
 ## 原型與平行實作
 
 當原型能降低大型變更風險時，鼓勵加入明確的 prototyping milestone。例如：先新增低階操作以驗證可行性，或平行探索兩種組合順序並測量差異。原型必須保持 additive、可測試、可回收，並清楚標示範圍。
@@ -182,9 +197,13 @@ Patch (`0.0.*`) 跟隨同一份 ExecPlan 的後續補充任務。當 ExecPlan �
 
     列出要在 repository root 或其他明確工作目錄執行的命令。若有重要輸出，放入精簡預期 transcript。
 
+    最後一個實作步驟必須是 README consistency check：確認 `README.md` 與 `README.zh-TW.md` 都已更新或已判定不需更新，兩份文件互相連結，章節順序一致，事實、命令、版本 marker 與維護規範等價，並執行 `yarn readme:check-version`。
+
     ## Validation and Acceptance
 
     說明如何啟動、操作或測試系統，以及應觀察到什麼。Acceptance 必須是可由人類驗證的行為。
+
+    Acceptance 必須包含 README consistency acceptance：`README.md` 與 `README.zh-TW.md` 的內容等價、互相連結、版本 marker 一致，且 `yarn readme:check-version` 通過或明確記錄不能執行的原因。
 
     ## Idempotence and Recovery
 
